@@ -955,6 +955,18 @@ async function renderLibrary() {
 }
 
 // ─── Init ─────────────────────────────────────────────────────
+// Silent refresh: re-fetch data without re-rendering the whole page
+setInterval(async () => {
+  if (currentStep === 'library' && !document.hidden) {
+    try {
+      const c = document.getElementById('content');
+      const existing = c.innerHTML;
+      await renderLibrary();
+      // Only update if content actually changed
+      if (c.innerHTML === existing) c.innerHTML = existing;
+    } catch {}
+  }
+}, 30000);
 loadStep();
 </script>
 </body>
