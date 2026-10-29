@@ -578,7 +578,9 @@ function renderPublish() {
     fetch(`${pdsUrl}/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.hubPublication`).then(r => r.ok ? r.json() : { records: [] }).catch(() => ({ records: [] })),
     fetch(`${pdsUrl}/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.enrollment`).then(r => r.ok ? r.json() : { records: [] }).catch(() => ({ records: [] })),
   ]).then(([latestCommit, pubsData, enrollData]) => {
-    const pubs = pubsData.records || [];
+    // Only keep the "main" publication (one per hub, like GitHub)
+    const allPubs = pubsData.records || [];
+    const pubs = allPubs.filter(p => p.rkey === 'main');
     const enrollments = enrollData.records || [];
     const totalRev = latestCommit ? latestCommit.rev : 0;
 
@@ -869,6 +871,7 @@ async function renderLibrary() {
         if (resp.ok) {
           const data = await resp.json();
           for (const rec of (data.records || [])) {
+            if (rec.rkey !== 'main') continue; // only show the main publication, one per hub
             try {
               const bytes = new Uint8Array(rec.bytes || []);
               const body = cbor.decode(bytes);
