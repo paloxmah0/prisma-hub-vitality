@@ -806,16 +806,20 @@ async function publishAll() {
       const file = vidFile.files[0];
       if (file.size <= 50 * 1024 * 1024) {
         toast(`Uploading video (${Math.round(file.size / 1024 / 1024 * 10) / 10}MB)...`);
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        const headers = { 'Content-Type': 'application/octet-stream' };
-        if (sessionToken) headers['Authorization'] = 'Bearer ' + sessionToken;
         try {
           const resp = await fetch(`${pdsUrl}/xrpc/com.prisma.repo.uploadBlob?did=${encodeURIComponent(sessionDid)}`, {
-            method: 'POST', headers, body: bytes
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/octet-stream',
+              'Authorization': 'Bearer ' + sessionToken
+            },
+            body: file
           });
           const text = await resp.text();
-          if (!resp.ok) throw new Error(text);
+          console.log('Video upload response:', resp.status, text);
+          if (!resp.ok) throw new Error(`PDS ${resp.status}: ${text}`);
           const blobRes = JSON.parse(text);
+          console.log('Blob CID:', blobRes.cid);
           doc.video = { name: file.name, cid: blobRes.cid, size: file.size };
         } catch (vidErr) {
           console.error('Video upload error:', vidErr);
@@ -925,7 +929,8 @@ async function renderLibrary() {
         if (videoUrl) {
           html += `<div style="margin-bottom: 0.75rem;">
             <div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">🎬 Video — ${b.video.name} (${Math.round(b.video.size / 1024 / 1024 * 10) / 10}MB)</div>
-            <video controls src="${videoUrl}" style="width: 100%; border-radius: 0.5rem; margin-top: 0.5rem;"></video>
+            <video controls src="${videoUrl}" style="width: 100%; border-radius: 0.5rem; margin-top: 0.5rem;" onerror="this.outerHTML='<p style=\\'color:#ef4444;font-size:0.8rem;padding:0.5rem;\\'>Video not found on PDS (CID: ${b.video.cid})</p>'"></video>
+            <div style="font-size: 0.65rem; color: #475569; margin-top: 0.3rem;">Blob CID: ${copyable(b.video.cid)}</div>
           </div>`;
         }
       }
