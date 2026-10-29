@@ -197,16 +197,41 @@ async function pdsPost(path, body) {
 document.getElementById('wallet-btn').addEventListener('click', walletSignIn);
 
 async function walletSignIn() {
+  console.log('walletSignIn called, pdsUrl=', pdsUrl);
   if (!pdsUrl) { toast('Set the PDS URL first', true); return; }
   try {
+    console.log('window.cardano keys:', Object.keys(window.cardano || {}));
     const wallets = Object.keys(window.cardano || {}).filter(k => window.cardano[k].enable);
+    console.log('available wallets:', wallets);
     if (wallets.length === 0) { toast('No Cardano wallet found. Install Eternl, Nami, or Lace.', true); return; }
 
-    const walletName = wallets[0];
-    toast(`Connecting to ${walletName}...`);
-    walletApi = await window.cardano[walletName].enable();
+    // Try each wallet until one works
+    let enabled = null;
+    let walletName = null;
+    for (const w of wallets) {
+      console.log('trying wallet:', w);
+      try {
+        enabled = await window.cardano[w].enable();
+        walletName = w;
+        walletApi = enabled;
+        console.log('wallet enabled:', w);
+        break;
+      } catch (e) {
+        console.log('wallet', w, 'failed:', e.message);
+        toast(`${w} failed: ${e.message}, trying next...`);
+      }
+    }
+    if (!enabled || !walletName) { throw new Error('No wallet could be enabled. Make sure a Cardano wallet is installed and unlocked.'); }
+    toast(`Connected to ${walletName}`);
 
-    const rewardAddresses = await walletApi.getRewardAddresses();
+    let rewardAddresses;
+    try {
+      rewardAddresses = await walletApi.getRewardAddresses();
+    } catch (gaErr) {
+      console.error('getRewardAddresses error:', gaErr);
+      throw new Error('Could not get reward addresses: ' + gaErr.message);
+    }
+    console.log('rewardAddresses:', rewardAddresses);
     if (!rewardAddresses || rewardAddresses.length === 0) { toast('No reward address', true); return; }
     rewardAddress = rewardAddresses[0];
     console.log('rewardAddress raw:', rewardAddress, 'type:', typeof rewardAddress);
@@ -256,7 +281,7 @@ async function walletSignIn() {
     toast('Signed in!');
     updateStepper();
     loadStep();
-  } catch (err) { toast('Sign-in failed: ' + err.message, true); }
+  } catch (err) { console.error('walletSignIn FULL ERROR:', err); toast('Sign-in failed: ' + err.message, true); }
 }
 
 // ─── Stepper ──────────────────────────────────────────────────
@@ -792,33 +817,29 @@ async function uploadVideo() {
   const bytes = new Uint8Array(await file.arrayBuffer());
   toast('Uploading to PDS...');
   try {
-    const r = await pdsPost('/xrpc/com.prisma.repo.uploadBlob?did=' + encodeURIComponent(sessionDid), JSON.stringify(Array.from(bytes)));
-    // Actually uploadBlob expects raw bytes, not JSON. Fix: use fetch directly.
-  } catch (e) {
-    // Fallback: direct fetch with raw body
-    try {
-      const headers = { 'Content-Type': 'application/octet-stream' };
-      if (sessionToken) headers['Authorization'] = 'Bearer ' + sessionToken;
-      const resp = await fetch(`${pdsUrl}/xrpc/com.prisma.repo.uploadBlob?did=${encodeURIComponent(sessionDid)}`, {
-        method: 'POST', headers, body: bytes
-      });
-      const text = await resp.text();
-      if (!resp.ok) throw new Error(text);
-      const res = JSON.parse(text);
-      toast('Video uploaded! CID: ' + short(res.cid));
-      const player = document.getElementById('vid-player');
-      const url = URL.createObjectURL(file);
-      player.innerHTML = `<video controls src="${url}" style="width:100%; border-radius:0.5rem;"></video>`;
-      const list = document.getElementById('vid-list');
-      list.innerHTML = `<p style="font-size:0.7rem; color:#64748b; margin-top:0.5rem;">Stored on your PDS · CID: ${copyable(res.cid)}</p>`;
-      // Also create a record referencing the blob
-      await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-        collection: 'prisma.events.playbookSection', rkey: rkey(),
-        hubName: 'video', region: 'media', section: 'video',
-        title: file.name, content: 'Video blob', status: 'published', author: 'self', createdAt: now()
-      });
-    } catch (e2) { toast('Upload failed: ' + e2.message, true); }
-  }
+    const headers = { 'Content-Type': 'application/octet-stream' };
+    if (sessionToken) headers['Authorization'] = 'Bearer ' + sessionToken;
+    const resp = await fetch(`${pdsUrl}/xrpc/com.prisma.repo.uploadBlob?did=${encodeURIComponent(sessionDid)}`, {
+      method: 'POST', headers, body: bytes
+    });
+    const text = await resp.text();
+    if (!resp.ok) throw new Error(text);
+    const res = JSON.parse(text);
+    toast('Video uploaded! ' + short(res.cid));
+    const player = document.getElementById('vid-player');
+    const url = URL.createObjectURL(file);
+    player.innerHTML = `<video controls src="${url}" style="width:100%; border-radius:0.5rem;"></video>`;
+    const list = document.getElementById('vid-list');
+    list.innerHTML = `<p style="font-size:0.7rem; color:#64748b; margin-top:0.5rem;">Stored on your PDS · CID: ${copyable(res.cid)}</p>`;
+    // Create a record referencing the blob
+    await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+      collection: 'prisma.events.playbookSection', rkey: rkey(),
+      hubName: 'video', region: 'media', section: 'video',
+      title: file.name, content: 'Video blob CID: ' + res.cid, status: 'published', author: 'self', createdAt: now()
+    });
+    toast('Video published to gazette!');
+    setTimeout(() => renderBuild(), 2000);
+  } catch (e) { console.error('uploadVideo error:', e); toast('Upload failed: ' + e.message, true); }
 }
 
 // ─── Build actions ────────────────────────────────────────────
@@ -829,7 +850,7 @@ async function createProject() {
       collection: 'prisma.events.project', rkey: rkey(), name, impactArea: val('p-impact'), createdAt: now()
     });
     toast('Filed! ' + short(r.cid));
-    setTimeout(() => renderBuild(), 1500);
+    setTimeout(() => renderBuild(), 3000);
   } catch (e) { toast(e.message, true); }
 }
 
@@ -842,7 +863,7 @@ async function createInterview() {
       notes: val('iv-notes'), createdAt: now()
     });
     toast('Recorded! ' + short(r.cid));
-    setTimeout(() => renderBuild(), 1500);
+    setTimeout(() => renderBuild(), 3000);
   } catch (e) { toast(e.message, true); }
 }
 
@@ -854,7 +875,7 @@ async function createMilestone() {
       hubName: 'self', milestone: m, status: val('ms-status'), completedAt: now()
     });
     toast('Marked! ' + short(r.cid));
-    setTimeout(() => renderBuild(), 1500);
+    setTimeout(() => renderBuild(), 3000);
   } catch (e) { toast(e.message, true); }
 }
 
@@ -867,7 +888,7 @@ async function createBudget() {
       interviewsTarget: parseInt(val('bg-target')) || 0, playbookStatus: 'draft'
     });
     toast('Entered! ' + short(r.cid));
-    setTimeout(() => renderBuild(), 1500);
+    setTimeout(() => renderBuild(), 3000);
   } catch (e) { toast(e.message, true); }
 }
 
@@ -879,7 +900,7 @@ async function createTeam() {
       hubName: sessionDid, region: val('lt-region'), interviewsDone: 0, earnedAda: '0'
     });
     toast('Added! ' + short(r.cid));
-    setTimeout(() => renderBuild(), 1500);
+    setTimeout(() => renderBuild(), 3000);
   } catch (e) { toast(e.message, true); }
 }
 
@@ -892,7 +913,7 @@ async function createPlaybook() {
       title: t, content: val('pb-content'), status: 'draft', author: 'self', createdAt: now()
     });
     toast('Drafted! ' + short(r.cid));
-    setTimeout(() => renderBuild(), 1500);
+    setTimeout(() => renderBuild(), 3000);
   } catch (e) { toast(e.message, true); }
 }
 
