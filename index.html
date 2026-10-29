@@ -50,8 +50,8 @@
 <nav id="stepper" class="px-6 pt-4 flex gap-6 text-sm font-medium">
   <button class="step step-active pb-2" data-step="connect">1. Connect</button>
   <button class="step pb-2" data-step="register">2. Register</button>
-  <button class="step pb-2" data-step="build">3. Build</button>
-  <button class="step pb-2" data-step="vitality">4. Vitality</button>
+  <button class="step pb-2" data-step="build">3. Publish</button>
+  <button class="step pb-2" data-step="library">4. Library</button>
 </nav>
 
 <!-- Content -->
@@ -322,8 +322,8 @@ function loadStep() {
   switch (currentStep) {
     case 'connect': renderConnect(); break;
     case 'register': renderRegister(); break;
-    case 'build': renderBuild(); break;
-    case 'vitality': renderVitality(); break;
+    case 'build': renderPublish(); break;
+    case 'library': renderLibrary(); break;
   }
 }
 
@@ -553,389 +553,228 @@ async function submitRegistration() {
   } catch (e) { console.error('submitRegistration error:', e); toast(e.message, true); if (btn) { btn.disabled = false; btn.textContent = 'Register & Create Hub →'; } }
 }
 
-// ─── Step 3: Build — The Hub Gazette ────────────────────────────
-function renderBuild() {
+// ─── Step 3: Publish (one big form, publish once) ────────────
+function renderPublish() {
   const c = document.getElementById('content');
   if (!sessionToken) { c.innerHTML = emptyState('Not signed in', 'Connect your wallet first.'); return; }
-  if (!hubCreated) {
-    c.innerHTML = `<div class="max-w-2xl mx-auto fade-in"><div class="glass rounded-xl p-6 text-center">
-      <h3 class="text-slate-300 mb-2">No hub yet</h3>
-      <p class="text-slate-500 text-sm mb-4">Register your hub first (step 2).</p>
-      <button onclick="document.querySelector('[data-step=\\'register\\']').click()" class="px-4 py-2 rounded bg-green-600 hover:bg-green-500 text-sm">Go to Registration</button>
-    </div></div>`;
-    return;
-  }
-  renderGazette();
-}
-
-// Gazette styles injected once
-let gazetteStylesInjected = false;
-function injectGazetteStyles() {
-  if (gazetteStylesInjected) return;
-  gazetteStylesInjected = true;
-  const style = document.createElement('style');
-  style.textContent = `
-    .gazette { font-family: Georgia, 'Times New Roman', serif; max-width: 48rem; margin: 0 auto; }
-    .gazette .masthead { text-align: center; border-top: 3px double #22c55e; border-bottom: 3px double #22c55e; padding: 1.5rem 0; margin-bottom: 1.5rem; }
-    .gazette .masthead h1 { font-size: 2.5rem; font-weight: 900; letter-spacing: 0.05em; color: #bbf7d0; margin: 0; }
-    .gazette .masthead .date { font-size: 0.75rem; letter-spacing: 0.2em; text-transform: uppercase; color: #64748b; margin-top: 0.5rem; }
-    .gazette .masthead .vol { font-size: 0.7rem; color: #475569; margin-top: 0.25rem; }
-    .gazette .column-flow { column-count: 2; column-gap: 2rem; column-rule: 1px solid #1e293b; }
-    @media (max-width: 768px) { .gazette .column-flow { column-count: 1; } }
-    .gazette .article { break-inside: avoid; margin-bottom: 1.5rem; }
-    .gazette .article h2 { font-size: 1.5rem; font-weight: 800; color: #86efac; margin: 0 0 0.5rem; }
-    .gazette .article .kicker { font-size: 0.7rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e; margin-bottom: 0.25rem; }
-    .gazette .article .byline { font-size: 0.7rem; color: #64748b; font-style: italic; margin-bottom: 0.5rem; }
-    .gazette .article p { font-size: 0.875rem; line-height: 1.7; color: #cbd5e1; margin: 0 0 0.75rem; }
-    .gazette .dropcap::first-letter { font-size: 3rem; font-weight: 900; float: left; line-height: 0.8; padding: 0.1rem 0.3rem 0 0; color: #22c55e; }
-    .gazette .feature { border-top: 1px solid #1e293b; border-bottom: 1px solid #1e293b; padding: 1.5rem 0; margin: 1.5rem 0; }
-    .gazette .feature h2 { font-size: 1.75rem; color: #86efac; text-align: center; margin-bottom: 0.5rem; }
-    .gazette .compose { background: rgba(34, 197, 94, 0.05); border: 1px dashed #1e293b; border-radius: 0.5rem; padding: 1rem; margin: 0.5rem 0 1rem; }
-    .gazette .compose .label { font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase; color: #22c55e; margin-bottom: 0.5rem; }
-    .gazette input, .gazette textarea, .gazette select { background: #131923; border: 1px solid #2a3548; border-radius: 0.3rem; color: #e2e8f0; font-family: inherit; font-size: 0.875rem; }
-    .gazette .vid-feature { background: #0f172a; border-radius: 0.5rem; overflow: hidden; }
-    .gazette .rule { border: none; border-top: 1px solid #1e293b; margin: 1.5rem 0; }
-    .gazette .endmark { text-align: center; color: #22c55e; font-size: 1rem; letter-spacing: 0.5em; }
-  `;
-  document.head.appendChild(style);
-}
-
-async function renderGazette() {
-  injectGazetteStyles();
-  const c = document.getElementById('content');
-  c.innerHTML = '<div class="text-slate-500 text-sm">Composing the Gazette...</div>';
-
-  let hubInfo = null;
-  let projects = [];
-  let milestones = [];
-  let budgets = [];
-  let teams = [];
-  let playbook = [];
-  try {
-    const hubsRes = await appviewGet('/api/research/hubs');
-    hubInfo = (hubsRes.hubs || []).find(h => h.did === sessionDid);
-  } catch {}
-  try {
-    const cs = await appviewGet('/api/research/case-studies');
-    projects = (cs.case_studies || []).filter(p => p.did === sessionDid);
-  } catch {}
-  try {
-    const ec = await appviewGet('/api/research/event-contract');
-    milestones = (ec.milestones || []).filter(m => m.did === sessionDid);
-    budgets = (ec.budgets || []).filter(b => b.did === sessionDid);
-    teams = (ec.local_teams || []).filter(t => t.did === sessionDid);
-    playbook = (ec.playbook_sections || []).filter(p => p.did === sessionDid);
-  } catch {}
-
-  const hubName = hubInfo ? hubInfo.name : 'Your Hub';
-  const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-  const recordCount = projects.length + milestones.length + budgets.length + teams.length + playbook.length;
 
   c.innerHTML = `
-    <div class="gazette fade-in">
-      <!-- Masthead -->
-      <div class="masthead">
-        <h1>THE HUB GAZETTE</h1>
-        <div class="date">${today}</div>
-        <div class="vol">VOL. 1 · ${hubName} · ${copyable(sessionDid, 'Copy DID')}</div>
+    <div class="max-w-3xl mx-auto fade-in">
+      <div class="text-center mb-6">
+        <h2 class="text-xl font-bold text-green-300">Publish Your Research</h2>
+        <p class="text-slate-400 text-sm mt-1">Fill in everything, then click Publish. All records are written to your PDS in one go and composed into a gazette.</p>
       </div>
 
-      <!-- Lead article -->
-      <div class="article">
-        <div class="kicker">From the Editor</div>
-        <h2>${hubName} begins its story on-chain</h2>
-        <div class="byline">By ${hubInfo ? hubInfo.stakeholder_type : '—'} · Signed at ${hubInfo ? hubInfo.enrolled_at : '—'}</div>
-        <p class="dropcap">This gazette is a living record. Every word, every milestone, every shilling spent is written to your Personal Data Server, signed with your Ed25519 key, and mirrored by the relay. It does not live on someone else's server — it lives on your disk. Read it. Add to it. Publish it.</p>
-        <p>So far, ${recordCount} record${recordCount === 1 ? '' : 's'} have been committed. The story grows as you write it below — each section is a new column in your gazette.</p>
+      <div class="glass rounded-xl p-6 mb-4">
+        <h3 class="font-semibold text-green-300 mb-4">📋 Project / Case Study</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div><label class="text-xs text-slate-500">Project Name</label>
+            <input id="pub-project-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Project name"></div>
+          <div><label class="text-xs text-slate-500">Impact Area</label>
+            <input id="pub-project-impact" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Nairobi, Kenya"></div>
+        </div>
       </div>
 
-      <hr class="rule">
-
-      <!-- Project articles -->
-      ${projects.length > 0 ? `
-        <div class="article">
-          <div class="kicker">Case Studies</div>
-          <h2>${projects.length} project${projects.length === 1 ? '' : 's'} on the record</h2>
-          ${projects.map((p, i) => `
-            <div style="margin-bottom: 0.75rem;">
-              <p><strong>${p.name || 'Untitled'}</strong> — ${p.impact_area || 'impact area pending'}. ${copyable(p.cid)}.</p>
-            </div>
-          `).join('')}
+      <div class="glass rounded-xl p-6 mb-4">
+        <h3 class="font-semibold text-green-300 mb-4">🎤 Interview</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div><label class="text-xs text-slate-500">Title</label>
+            <input id="pub-iv-title" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Interview title"></div>
+          <div><label class="text-xs text-slate-500">Consent</label>
+            <select id="pub-iv-consent" class="w-full rounded px-3 py-2 mt-1 text-sm">
+              <option value="public">Public</option><option value="anonymous">Anonymous</option><option value="private">Private</option>
+            </select></div>
         </div>
-      ` : ''}
-
-      <!-- Milestone column -->
-      ${milestones.length > 0 ? `
-        <div class="article">
-          <div class="kicker">On the March</div>
-          <h2>Milestones crossed</h2>
-          ${milestones.map(m => {
-            const done = m.status === 'done' || m.status === 'completed';
-            return `<p>${done ? '■' : '□'} <strong>${m.milestone}</strong> — <em style="color:${done ? '#22c55e' : '#94a3b8'}">${m.status}</em>${m.completed_at ? ' · ' + m.completed_at : ''}</p>`;
-          }).join('')}
-        </div>
-      ` : ''}
-
-      <!-- Video feature -->
-      <div class="feature">
-        <div class="kicker">Video Feature</div>
-        <h2>Words from the ground</h2>
-        <p style="text-align:center; color:#64748b; font-size:0.8rem; margin-bottom:1rem;">Upload a clip — it's stored as a blob on your PDS, signed as part of your repo.</p>
-        <div class="vid-feature" style="padding: 1rem;">
-          <input id="vid-file" type="file" accept="video/*" style="margin-bottom: 0.5rem; font-size: 0.8rem;" />
-          <button onclick="uploadVideo()" style="padding: 0.5rem 1rem; background: #22c55e; color: #0a0e14; border: none; border-radius: 0.3rem; font-family: inherit; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Upload to PDS</button>
-          <div id="vid-player" style="margin-top: 1rem;"></div>
-        </div>
-        <div id="vid-list" style="margin-top: 0.5rem;"></div>
+        <div class="mt-3"><label class="text-xs text-slate-500">Notes</label>
+          <textarea id="pub-iv-notes" class="w-full rounded px-3 py-2 mt-1 text-sm h-20" placeholder="What was said, what was heard..."></textarea></div>
       </div>
 
-      <!-- Budget ledger -->
-      ${budgets.length > 0 ? `
-        <div class="article">
-          <div class="kicker">The Ledger</div>
-          <h2>Budget allocations</h2>
-          ${budgets.map(b => `
-            <p><strong>Total:</strong> ${b.total_ada} ADA · <strong>Earned:</strong> ${b.earned_ada} ADA · <strong>Interviews:</strong> ${b.interviews_done}/${b.interviews_target}${b.body?.location ? ' · ' + b.body.location : ''}</p>
-          `).join('')}
-        </div>
-      ` : ''}
-
-      <!-- Local team -->
-      ${teams.length > 0 ? `
-        <div class="article">
-          <div class="kicker">The People</div>
-          <h2>Local team on the beat</h2>
-          ${teams.map(t => `<p><strong>${t.team_name}</strong> — ${t.region || 'region pending'} · ${copyable(t.team_did)}</p>`).join('')}
-        </div>
-      ` : ''}
-
-      <!-- Playbook -->
-      ${playbook.length > 0 ? `
-        <div class="article">
-          <div class="kicker">The Playbook</div>
-          <h2>Sections in draft</h2>
-          ${playbook.map(p => `<p><strong>${p.title}</strong> — ${p.section}. <em style="color:#94a3b8">${p.status}</em></p>`).join('')}
-        </div>
-      ` : ''}
-
-      <hr class="rule">
-
-      <!-- Compose new columns inline -->
-      <div class="kicker" style="text-align:center;">Compose the next edition</div>
-      <p style="text-align:center; color:#64748b; font-size:0.8rem; margin-bottom:1.5rem;">Write below. Each entry becomes a signed record on your PDS.</p>
-
-      <!-- Compose: Project -->
-      <div class="compose">
-        <div class="label">New Case Study</div>
-        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
-          <input id="p-name" placeholder="Project name" style="padding: 0.5rem;" />
-          <input id="p-impact" placeholder="Impact area (e.g. Nairobi)" style="padding: 0.5rem;" />
-        </div>
-        <button onclick="createProject()" style="margin-top: 0.5rem; padding: 0.4rem 1rem; background: #22c55e; color: #0a0e14; border: none; border-radius: 0.3rem; font-family: inherit; font-weight: 600; cursor: pointer; font-size: 0.8rem;">File this story</button>
-      </div>
-
-      <!-- Compose: Interview -->
-      <div class="compose">
-        <div class="label">New Interview</div>
-        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
-          <input id="iv-title" placeholder="Title" style="padding: 0.5rem;" />
-          <select id="iv-consent" style="padding: 0.5rem;"><option value="public">Public</option><option value="anonymous">Anonymous</option><option value="private">Private</option></select>
-          <input id="iv-uri" placeholder="Subject URI (did/rkey)" style="padding: 0.5rem;" />
-          <input id="iv-cid" placeholder="Subject CID" style="padding: 0.5rem;" />
-        </div>
-        <textarea id="iv-notes" placeholder="The interview notes — what was said, what was heard..." style="width:100%; padding: 0.5rem; margin-top: 0.5rem; min-height: 4rem; resize: vertical;"></textarea>
-        <button onclick="createInterview()" style="margin-top: 0.5rem; padding: 0.4rem 1rem; background: #22c55e; color: #0a0e14; border: none; border-radius: 0.3rem; font-family: inherit; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Record this interview</button>
-      </div>
-
-      <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
-        <!-- Compose: Milestone -->
-        <div class="compose">
-          <div class="label">Milestone</div>
-          <input id="ms-name" placeholder="Milestone (e.g. Onboarding)" style="padding: 0.5rem; margin-bottom: 0.5rem; width: 100%;" />
-          <select id="ms-status" style="padding: 0.5rem; margin-bottom: 0.5rem; width: 100%;"><option value="pending">Pending</option><option value="in_progress">In Progress</option><option value="done">Done</option></select>
-          <button onclick="createMilestone()" style="padding: 0.4rem 1rem; background: #22c55e; color: #0a0e14; border: none; border-radius: 0.3rem; font-family: inherit; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Mark it</button>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div class="glass rounded-xl p-6">
+          <h3 class="font-semibold text-green-300 mb-4">🏁 Milestone</h3>
+          <div><label class="text-xs text-slate-500">Milestone</label>
+            <input id="pub-ms-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Onboarding complete"></div>
+          <div class="mt-2"><label class="text-xs text-slate-500">Status</label>
+            <select id="pub-ms-status" class="w-full rounded px-3 py-2 mt-1 text-sm">
+              <option value="pending">Pending</option><option value="in_progress">In Progress</option><option value="done">Done</option>
+            </select></div>
         </div>
 
-        <!-- Compose: Budget -->
-        <div class="compose">
-          <div class="label">Budget Entry</div>
-          <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 0.3rem;">
-            <input id="bg-hub" placeholder="Hub" style="padding: 0.4rem; font-size: 0.8rem;" />
-            <input id="bg-loc" placeholder="Location" style="padding: 0.4rem; font-size: 0.8rem;" />
-            <input id="bg-total" placeholder="Total ADA" style="padding: 0.4rem; font-size: 0.8rem;" />
-            <input id="bg-earned" placeholder="Earned ADA" style="padding: 0.4rem; font-size: 0.8rem;" />
-            <input id="bg-done" type="number" placeholder="Done" style="padding: 0.4rem; font-size: 0.8rem;" />
-            <input id="bg-target" type="number" placeholder="Target" style="padding: 0.4rem; font-size: 0.8rem;" />
+        <div class="glass rounded-xl p-6">
+          <h3 class="font-semibold text-green-300 mb-4">💰 Budget</h3>
+          <div class="grid grid-cols-2 gap-2">
+            <div><label class="text-xs text-slate-500">Total ADA</label>
+              <input id="pub-bg-total" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="50000"></div>
+            <div><label class="text-xs text-slate-500">Earned ADA</label>
+              <input id="pub-bg-earned" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="12000"></div>
+            <div><label class="text-xs text-slate-500">Interviews Done</label>
+              <input id="pub-bg-done" type="number" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="8"></div>
+            <div><label class="text-xs text-slate-500">Target</label>
+              <input id="pub-bg-target" type="number" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="20"></div>
+            <div><label class="text-xs text-slate-500">Location</label>
+              <input id="pub-bg-loc" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Location"></div>
           </div>
-          <button onclick="createBudget()" style="margin-top: 0.5rem; padding: 0.4rem 1rem; background: #22c55e; color: #0a0e14; border: none; border-radius: 0.3rem; font-family: inherit; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Enter the ledger</button>
         </div>
       </div>
 
-      <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
-        <!-- Compose: Team -->
-        <div class="compose">
-          <div class="label">Add a Person</div>
-          <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 0.3rem;">
-            <input id="lt-name" placeholder="Name" style="padding: 0.4rem; font-size: 0.8rem;" />
-            <input id="lt-did" placeholder="DID" style="padding: 0.4rem; font-size: 0.8rem;" />
-            <input id="lt-wallet" placeholder="Wallet" style="padding: 0.4rem; font-size: 0.8rem;" />
-            <input id="lt-region" placeholder="Region" style="padding: 0.4rem; font-size: 0.8rem;" />
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div class="glass rounded-xl p-6">
+          <h3 class="font-semibold text-green-300 mb-4">👥 Local Team Member</h3>
+          <div class="grid grid-cols-2 gap-2">
+            <div><label class="text-xs text-slate-500">Name</label>
+              <input id="pub-lt-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Member name"></div>
+            <div><label class="text-xs text-slate-500">DID</label>
+              <input id="pub-lt-did" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="did:cardano:..."></div>
+            <div><label class="text-xs text-slate-500">Wallet</label>
+              <input id="pub-lt-wallet" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="addr1..."></div>
+            <div><label class="text-xs text-slate-500">Region</label>
+              <input id="pub-lt-region" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Region"></div>
           </div>
-          <button onclick="createTeam()" style="margin-top: 0.5rem; padding: 0.4rem 1rem; background: #22c55e; color: #0a0e14; border: none; border-radius: 0.3rem; font-family: inherit; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Add to the beat</button>
         </div>
 
-        <!-- Compose: Playbook -->
-        <div class="compose">
-          <div class="label">Playbook Section</div>
-          <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 0.3rem;">
-            <input id="pb-section" placeholder="Section" style="padding: 0.4rem; font-size: 0.8rem;" />
-            <input id="pb-title" placeholder="Title" style="padding: 0.4rem; font-size: 0.8rem;" />
-            <input id="pb-region" placeholder="Region" style="padding: 0.4rem; font-size: 0.8rem;" />
+        <div class="glass rounded-xl p-6">
+          <h3 class="font-semibold text-green-300 mb-4">📖 Playbook Section</h3>
+          <div class="grid grid-cols-2 gap-2">
+            <div><label class="text-xs text-slate-500">Section</label>
+              <input id="pub-pb-section" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Introduction"></div>
+            <div><label class="text-xs text-slate-500">Title</label>
+              <input id="pub-pb-title" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Section title"></div>
+            <div><label class="text-xs text-slate-500">Region</label>
+              <input id="pub-pb-region" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Region"></div>
           </div>
-          <textarea id="pb-content" placeholder="The section text..." style="width:100%; padding: 0.4rem; margin-top: 0.3rem; min-height: 3rem; resize: vertical; font-size: 0.8rem;"></textarea>
-          <button onclick="createPlaybook()" style="margin-top: 0.3rem; padding: 0.4rem 1rem; background: #22c55e; color: #0a0e14; border: none; border-radius: 0.3rem; font-family: inherit; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Draft it</button>
+          <div class="mt-2"><label class="text-xs text-slate-500">Content</label>
+            <textarea id="pub-pb-content" class="w-full rounded px-3 py-2 mt-1 text-sm h-16" placeholder="The section text..."></textarea></div>
         </div>
       </div>
 
-      <!-- Authorize -->
-      <div class="compose">
-        <div class="label">Authorize a contributor</div>
-        <p style="font-size: 0.8rem; color: #64748b; margin: 0 0 0.5rem;">Grant another DID write access to your hub repo.</p>
-        <div style="display:flex; gap: 0.5rem;">
-          <input id="auth-did" placeholder="did:cardano:stake1..." style="padding: 0.5rem; flex: 1;" />
-          <button onclick="authorizeTeam()" style="padding: 0.4rem 1rem; background: #475569; color: #e2e8f0; border: none; border-radius: 0.3rem; font-family: inherit; font-weight: 600; cursor: pointer; font-size: 0.8rem;">Authorize</button>
-        </div>
+      <div class="glass rounded-xl p-6 mb-4">
+        <h3 class="font-semibold text-green-300 mb-4">🎬 Video Evidence</h3>
+        <input id="pub-vid-file" type="file" accept="video/*" class="text-sm mb-2" />
+        <p class="text-xs text-slate-500">Optional — upload a video clip. Stored as a blob on your PDS.</p>
       </div>
 
-      <hr class="rule">
-      <div class="endmark">■ ■ ■</div>
-
-      <button onclick="document.querySelector('[data-step=\\'vitality\\']').click()" style="width: 100%; padding: 0.75rem; margin-top: 1rem; background: #22c55e; color: #0a0e14; border: none; border-radius: 0.5rem; font-family: inherit; font-weight: 700; cursor: pointer; font-size: 0.9rem;">Read the full Vitality →</button>
+      <button id="pub-submit" onclick="publishAll()" class="w-full px-4 py-4 rounded bg-green-600 hover:bg-green-500 text-lg font-bold">Publish All Records →</button>
     </div>
   `;
 }
 
-// Video upload to PDS blob store
-async function uploadVideo() {
-  const fileInput = document.getElementById('vid-file');
-  if (!fileInput || !fileInput.files || !fileInput.files[0]) { toast('Choose a file first', true); return; }
-  const file = fileInput.files[0];
-  if (file.size > 50 * 1024 * 1024) { toast('Video too large (max 50MB)', true); return; }
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  toast('Uploading to PDS...');
+async function publishAll() {
+  const btn = document.getElementById('pub-submit');
+  if (btn) { btn.disabled = true; btn.textContent = 'Publishing...'; }
+  const results = [];
+  const projectName = val('pub-project-name');
+
   try {
-    const headers = { 'Content-Type': 'application/octet-stream' };
-    if (sessionToken) headers['Authorization'] = 'Bearer ' + sessionToken;
-    const resp = await fetch(`${pdsUrl}/xrpc/com.prisma.repo.uploadBlob?did=${encodeURIComponent(sessionDid)}`, {
-      method: 'POST', headers, body: bytes
-    });
-    const text = await resp.text();
-    if (!resp.ok) throw new Error(text);
-    const res = JSON.parse(text);
-    toast('Video uploaded! ' + short(res.cid));
-    const player = document.getElementById('vid-player');
-    const url = URL.createObjectURL(file);
-    player.innerHTML = `<video controls src="${url}" style="width:100%; border-radius:0.5rem;"></video>`;
-    const list = document.getElementById('vid-list');
-    list.innerHTML = `<p style="font-size:0.7rem; color:#64748b; margin-top:0.5rem;">Stored on your PDS · CID: ${copyable(res.cid)}</p>`;
-    // Create a record referencing the blob
-    await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-      collection: 'prisma.events.playbookSection', rkey: rkey(),
-      hubName: 'video', region: 'media', section: 'video',
-      title: file.name, content: 'Video blob CID: ' + res.cid, status: 'published', author: 'self', createdAt: now()
-    });
-    toast('Video published to gazette!');
-    setTimeout(() => renderBuild(), 2000);
-  } catch (e) { console.error('uploadVideo error:', e); toast('Upload failed: ' + e.message, true); }
+    // 1. Project
+    if (projectName) {
+      toast('Writing project...');
+      const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+        collection: 'prisma.events.project', rkey: rkey(),
+        name: projectName, impactArea: val('pub-project-impact'), createdAt: now()
+      });
+      results.push('Project');
+    }
+
+    // 2. Interview
+    const ivTitle = val('pub-iv-title');
+    if (ivTitle) {
+      toast('Writing interview...');
+      const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+        collection: 'prisma.events.interview', rkey: rkey(), title: ivTitle,
+        subject: { uri: projectName ? sessionDid + '/' + rkey() : '', cid: '' },
+        consent: val('pub-iv-consent'), notes: val('pub-iv-notes'), createdAt: now()
+      });
+      results.push('Interview');
+    }
+
+    // 3. Milestone
+    const msName = val('pub-ms-name');
+    if (msName) {
+      toast('Writing milestone...');
+      const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+        collection: 'prisma.events.milestoneProgress', rkey: rkey(),
+        hubName: projectName || 'Hub', milestone: msName, status: val('pub-ms-status'), completedAt: now()
+      });
+      results.push('Milestone');
+    }
+
+    // 4. Budget
+    if (val('pub-bg-total') || val('pub-bg-earned')) {
+      toast('Writing budget...');
+      const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+        collection: 'prisma.events.budgetAllocation', rkey: rkey(),
+        hubName: projectName || 'Hub', location: val('pub-bg-loc'),
+        totalAda: val('pub-bg-total') || '0', earnedAda: val('pub-bg-earned') || '0',
+        interviewsDone: parseInt(val('pub-bg-done')) || 0, interviewsTarget: parseInt(val('pub-bg-target')) || 0,
+        playbookStatus: 'draft'
+      });
+      results.push('Budget');
+    }
+
+    // 5. Local team
+    if (val('pub-lt-name')) {
+      toast('Writing team member...');
+      const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+        collection: 'prisma.events.localTeam', rkey: rkey(),
+        teamName: val('pub-lt-name'), teamDid: val('pub-lt-did'),
+        walletAddress: val('pub-lt-wallet'), hubName: sessionDid,
+        region: val('pub-lt-region'), interviewsDone: 0, earnedAda: '0'
+      });
+      results.push('Team member');
+    }
+
+    // 6. Playbook
+    if (val('pub-pb-title')) {
+      toast('Writing playbook section...');
+      const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+        collection: 'prisma.events.playbookSection', rkey: rkey(),
+        hubName: projectName || 'Hub', region: val('pub-pb-region'),
+        section: val('pub-pb-section'), title: val('pub-pb-title'),
+        content: val('pub-pb-content'), status: 'published', author: 'self', createdAt: now()
+      });
+      results.push('Playbook');
+    }
+
+    // 7. Video
+    const vidFile = document.getElementById('pub-vid-file');
+    if (vidFile && vidFile.files && vidFile.files[0]) {
+      const file = vidFile.files[0];
+      if (file.size <= 50 * 1024 * 1024) {
+        toast('Uploading video...');
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const headers = { 'Content-Type': 'application/octet-stream' };
+        if (sessionToken) headers['Authorization'] = 'Bearer ' + sessionToken;
+        const resp = await fetch(`${pdsUrl}/xrpc/com.prisma.repo.uploadBlob?did=${encodeURIComponent(sessionDid)}`, {
+          method: 'POST', headers, body: bytes
+        });
+        const text = await resp.text();
+        if (resp.ok) {
+          const blobRes = JSON.parse(text);
+          await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+            collection: 'prisma.events.playbookSection', rkey: rkey(),
+            hubName: projectName || 'Hub', region: 'media', section: 'video',
+            title: file.name, content: 'Video blob CID: ' + blobRes.cid,
+            status: 'published', author: 'self', createdAt: now()
+          });
+          results.push('Video');
+        }
+      } else { toast('Video too large (max 50MB), skipped', true); }
+    }
+
+    toast(`Published ${results.length} record${results.length === 1 ? '' : 's'}: ${results.join(', ')}`);
+    if (btn) { btn.disabled = false; btn.textContent = 'Publish All Records →'; }
+    setTimeout(() => { document.querySelector('[data-step="library"]').click(); }, 2000);
+  } catch (e) {
+    console.error('publishAll error:', e);
+    toast(e.message, true);
+    if (btn) { btn.disabled = false; btn.textContent = 'Publish All Records →'; }
+  }
 }
 
-// ─── Build actions ────────────────────────────────────────────
-async function createProject() {
-  try {
-    const name = val('p-name'); if (!name) return toast('Name required', true);
-    const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-      collection: 'prisma.events.project', rkey: rkey(), name, impactArea: val('p-impact'), createdAt: now()
-    });
-    toast('Filed! ' + short(r.cid));
-    setTimeout(() => renderBuild(), 3000);
-  } catch (e) { toast(e.message, true); }
-}
-
-async function createInterview() {
-  try {
-    const title = val('iv-title'); if (!title) return toast('Title required', true);
-    const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-      collection: 'prisma.events.interview', rkey: rkey(), title,
-      subject: { uri: val('iv-uri'), cid: val('iv-cid') }, consent: val('iv-consent'),
-      notes: val('iv-notes'), createdAt: now()
-    });
-    toast('Recorded! ' + short(r.cid));
-    setTimeout(() => renderBuild(), 3000);
-  } catch (e) { toast(e.message, true); }
-}
-
-async function createMilestone() {
-  try {
-    const m = val('ms-name'); if (!m) return toast('Milestone required', true);
-    const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-      collection: 'prisma.events.milestoneProgress', rkey: rkey(),
-      hubName: 'self', milestone: m, status: val('ms-status'), completedAt: now()
-    });
-    toast('Marked! ' + short(r.cid));
-    setTimeout(() => renderBuild(), 3000);
-  } catch (e) { toast(e.message, true); }
-}
-
-async function createBudget() {
-  try {
-    const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-      collection: 'prisma.events.budgetAllocation', rkey: rkey(),
-      hubName: val('bg-hub'), location: val('bg-loc'), totalAda: val('bg-total') || '0',
-      earnedAda: val('bg-earned') || '0', interviewsDone: parseInt(val('bg-done')) || 0,
-      interviewsTarget: parseInt(val('bg-target')) || 0, playbookStatus: 'draft'
-    });
-    toast('Entered! ' + short(r.cid));
-    setTimeout(() => renderBuild(), 3000);
-  } catch (e) { toast(e.message, true); }
-}
-
-async function createTeam() {
-  try {
-    const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-      collection: 'prisma.events.localTeam', rkey: rkey(),
-      teamName: val('lt-name'), teamDid: val('lt-did'), walletAddress: val('lt-wallet'),
-      hubName: sessionDid, region: val('lt-region'), interviewsDone: 0, earnedAda: '0'
-    });
-    toast('Added! ' + short(r.cid));
-    setTimeout(() => renderBuild(), 3000);
-  } catch (e) { toast(e.message, true); }
-}
-
-async function createPlaybook() {
-  try {
-    const t = val('pb-title'); if (!t) return toast('Title required', true);
-    const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-      collection: 'prisma.events.playbookSection', rkey: rkey(),
-      hubName: 'self', region: val('pb-region'), section: val('pb-section'),
-      title: t, content: val('pb-content'), status: 'draft', author: 'self', createdAt: now()
-    });
-    toast('Drafted! ' + short(r.cid));
-    setTimeout(() => renderBuild(), 3000);
-  } catch (e) { toast(e.message, true); }
-}
-
-async function authorizeTeam() {
-  try {
-    const d = val('auth-did'); if (!d) return toast('DID required', true);
-    const r = await pdsPost('/xrpc/com.prisma.repo.authorizeTeam', { team_did: d });
-    toast('Authorized! ' + short(r.team_did));
-  } catch (e) { toast(e.message, true); }
-}
-
-// ─── Step 4: Vitality ─────────────────────────────────────────
-async function renderVitality() {
+// ─── Step 4: Library (read all hubs' gazettes) ────────────────
+async function renderLibrary() {
   const c = document.getElementById('content');
-  if (!sessionToken) { c.innerHTML = emptyState('Not signed in', 'Connect your wallet first.'); return; }
+  c.innerHTML = '<div class="text-slate-500 text-sm">Loading the library...</div>';
 
   try {
     const [hubsRes, csRes, ecRes] = await Promise.all([
@@ -944,132 +783,123 @@ async function renderVitality() {
       appviewGet('/api/research/event-contract')
     ]);
 
-    const allHubs = hubsRes.hubs || [];
-    const myHubs = allHubs.filter(h => h.did === sessionDid);
-    const allCaseStudies = csRes.case_studies || [];
-    const myCaseStudies = allCaseStudies.filter(cs => cs.did === sessionDid);
+    const hubs = hubsRes.hubs || [];
+    const caseStudies = csRes.case_studies || [];
     const ec = ecRes;
-    const myMilestones = (ec.milestones || []).filter(m => m.did === sessionDid);
-    const myBudgets = (ec.budgets || []).filter(b => b.did === sessionDid);
-    const myTeams = (ec.local_teams || []).filter(t => t.did === sessionDid);
-    const myPlaybook = (ec.playbook_sections || []).filter(p => p.did === sessionDid);
+    const milestones = ec.milestones || [];
+    const budgets = ec.budgets || [];
+    const teams = ec.local_teams || [];
+    const playbook = ec.playbook_sections || [];
 
-    const totalDone = myBudgets.reduce((s, b) => s + b.interviews_done, 0);
-    const totalTarget = myBudgets.reduce((s, b) => s + b.interviews_target, 0);
+    if (hubs.length === 0) {
+      c.innerHTML = emptyState('No hubs yet', 'No one has registered. Be the first!');
+      return;
+    }
+
+    // Group records by hub
+    let html = '<div class="max-w-5xl mx-auto fade-in">';
+    html += `<div class="text-center mb-6"><h2 class="text-xl font-bold text-green-300">The Research Library</h2><p class="text-slate-400 text-sm mt-1">${hubs.length} hub${hubs.length === 1 ? '' : 's'} · ${caseStudies.length} case stud${caseStudies.length === 1 ? 'y' : 'ies'} · ${milestones.length} milestones · ${playbook.length} playbook sections</p></div>`;
+
+    // Vitality overview across all hubs
+    const totalDone = budgets.reduce((s, b) => s + b.interviews_done, 0);
+    const totalTarget = budgets.reduce((s, b) => s + b.interviews_target, 0);
     const pct = totalTarget > 0 ? Math.round((totalDone / totalTarget) * 100) : 0;
-    const msDone = myMilestones.filter(m => m.status === 'done' || m.status === 'completed').length;
-    const vitality = myHubs.length > 0 ? Math.round((pct + (myMilestones.length > 0 ? (msDone / myMilestones.length) * 100 : 0)) / 2) : 0;
 
-    c.innerHTML = `
-      <div class="max-w-5xl mx-auto fade-in">
-        ${myHubs.length > 0 ? `
-          <div class="glass rounded-xl p-6 mb-6 glow">
-            <div class="flex items-center justify-between mb-4">
-              <div>
-                <h2 class="text-xl font-bold text-green-300">${myHubs[0].name}</h2>
-                <div class="text-xs text-slate-500 mt-1">${myHubs[0].stakeholder_type} · ${copyable(myHubs[0].did)}</div>
-              </div>
-              <div class="text-right">
-                <div class="text-3xl font-bold ${vitality > 70 ? 'text-green-400' : vitality > 40 ? 'text-yellow-400' : 'text-slate-400'}">${vitality}%</div>
-                <div class="text-xs text-slate-500">Vitality</div>
-              </div>
-            </div>
-            <div class="w-full bg-slate-800 rounded-full h-3 overflow-hidden">
-              <div class="vitality-bar h-3 rounded-full transition-all duration-700" style="width: ${vitality}%"></div>
-            </div>
-          </div>
-        ` : `<div class="glass rounded-xl p-6 mb-6 text-center text-slate-500 text-sm">No hub found. Register first.</div>`}
-
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          <div class="glass rounded-xl p-5 text-center"><div class="text-3xl font-bold text-green-400">${myCaseStudies.length}</div><div class="text-xs text-slate-500 mt-1">Projects</div></div>
-          <div class="glass rounded-xl p-5 text-center"><div class="text-3xl font-bold text-blue-400">${myMilestones.length}</div><div class="text-xs text-slate-500 mt-1">Milestones</div></div>
-          <div class="glass rounded-xl p-5 text-center"><div class="text-3xl font-bold text-amber-400">${myBudgets.length}</div><div class="text-xs text-slate-500 mt-1">Budgets</div></div>
-          <div class="glass rounded-xl p-5 text-center"><div class="text-3xl font-bold text-purple-400">${myTeams.length}</div><div class="text-xs text-slate-500 mt-1">Team</div></div>
-        </div>
-
-        ${totalTarget > 0 ? `
-          <div class="glass rounded-xl p-6 mb-6">
-            <h3 class="text-sm font-medium text-slate-300 mb-3">Interview Progress</h3>
-            <div class="w-full bg-slate-800 rounded-full h-4 overflow-hidden">
-              <div class="vitality-bar h-4 rounded-full" style="width: ${pct}%"></div>
-            </div>
-            <div class="text-right text-xs text-slate-500 mt-1">${totalDone}/${totalTarget} (${pct}%)</div>
-          </div>
-        ` : ''}
-
-        ${myCaseStudies.length > 0 ? `
-          <h3 class="text-sm font-medium text-slate-300 mb-3">Case Studies</h3>
-          <div class="space-y-3 mb-6">
-            ${myCaseStudies.map(cs => `
-              <div class="glass rounded-xl p-5">
-                <div class="flex items-start justify-between">
-                  <div>
-                    <h4 class="font-semibold text-green-300">${cs.name || 'Untitled'}</h4>
-                    <div class="text-xs text-slate-500 mt-1">Impact: ${cs.impact_area || '—'} · ${(cs.interviews || []).length} interviews</div>
-                  </div>
-                  ${copyable(cs.cid, 'Copy CID')}
-                </div>
-              </div>
-            `).join('')}
-          </div>
-        ` : ''}
-
-        ${myMilestones.length > 0 ? `
-          <h3 class="text-sm font-medium text-slate-300 mb-3">Milestones</h3>
-          <div class="space-y-2 mb-6">
-            ${myMilestones.map(m => {
-              const sc = m.status === 'done' || m.status === 'completed' ? 'text-green-400' : m.status === 'in_progress' ? 'text-yellow-400' : 'text-slate-400';
-              return `<div class="glass rounded-lg p-4 flex items-center justify-between">
-                <div><span class="text-sm">${m.milestone}</span><div class="text-xs text-slate-500 mt-1">${m.completed_at || ''}</div></div>
-                <span class="text-xs ${sc}">${m.status}</span>
-              </div>`;
-            }).join('')}
-          </div>
-        ` : ''}
-
-        ${myBudgets.length > 0 ? `
-          <h3 class="text-sm font-medium text-slate-300 mb-3">Budget</h3>
-          <div class="space-y-2 mb-6">
-            ${myBudgets.map(b => `<div class="glass rounded-lg p-4 flex items-center justify-between">
-              <div class="text-sm"><span class="text-slate-300">Total: ${b.total_ada} ADA</span> · <span class="text-green-400">Earned: ${b.earned_ada} ADA</span></div>
-              <div class="text-xs text-slate-500">${b.interviews_done}/${b.interviews_target} interviews</div>
-            </div>`).join('')}
-          </div>
-        ` : ''}
-
-        ${myTeams.length > 0 ? `
-          <h3 class="text-sm font-medium text-slate-300 mb-3">Local Team</h3>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-6">
-            ${myTeams.map(t => `<div class="glass rounded-lg p-4">
-              <div class="font-medium text-green-300">${t.team_name}</div>
-              <div class="text-xs text-slate-500 mt-1">${t.region || ''} · ${copyable(t.team_did)}</div>
-            </div>`).join('')}
-          </div>
-        ` : ''}
-
-        ${myPlaybook.length > 0 ? `
-          <h3 class="text-sm font-medium text-slate-300 mb-3">Playbook</h3>
-          <div class="space-y-2 mb-6">
-            ${myPlaybook.map(p => `<div class="glass rounded-lg p-4">
-              <div class="flex justify-between"><span class="text-sm font-medium">${p.title}</span><span class="text-xs text-slate-500">${p.status}</span></div>
-              <div class="text-xs text-slate-500 mt-1">${p.section} · ${p.region || ''}</div>
-            </div>`).join('')}
-          </div>
-        ` : ''}
-
-        <div class="flex gap-3">
-          <button onclick="document.querySelector('[data-step=\\'build\\']').click()" class="px-4 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">← Add More Records</button>
-          <button onclick="renderVitality()" class="flex-1 px-4 py-2 rounded bg-green-600 hover:bg-green-500 text-sm">Refresh</button>
-        </div>
+    html += `<div class="glass rounded-xl p-6 mb-6">
+      <h3 class="text-sm font-medium text-slate-300 mb-3">Cross-hub Progress</h3>
+      <div class="w-full bg-slate-800 rounded-full h-4 overflow-hidden mb-2">
+        <div class="vitality-bar h-4 rounded-full" style="width: ${pct}%"></div>
       </div>
-    `;
+      <div class="text-right text-xs text-slate-500">${totalDone}/${totalTarget} interviews across all hubs (${pct}%)</div>
+    </div>`;
+
+    // Each hub as a gazette
+    for (const hub of hubs) {
+      const hubProjects = caseStudies.filter(cs => cs.did === hub.did);
+      const hubMs = milestones.filter(m => m.did === hub.did);
+      const hubBg = budgets.filter(b => b.did === hub.did);
+      const hubTeams = teams.filter(t => t.did === hub.did);
+      const hubPb = playbook.filter(p => p.did === hub.did);
+      const hubInterviews = hubProjects.flatMap(p => (p.interviews || []));
+      const recordCount = hubProjects.length + hubMs.length + hubBg.length + hubTeams.length + hubPb.length;
+
+      const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
+      html += `<div class="glass rounded-xl p-6 mb-6" style="font-family: Georgia, serif;">
+        <div style="border-top: 3px double #22c55e; border-bottom: 3px double #22c55e; padding: 1rem 0; text-align: center; margin-bottom: 1rem;">
+          <div style="font-size: 1.5rem; font-weight: 900; color: #bbf7d0; letter-spacing: 0.05em;">${hub.name}</div>
+          <div style="font-size: 0.7rem; color: #64748b; letter-spacing: 0.15em; text-transform: uppercase; margin-top: 0.3rem;">${hub.stakeholder_type} · ${today}</div>
+          <div style="font-size: 0.65rem; color: #475569; margin-top: 0.2rem;">${copyable(hub.did)}</div>
+        </div>`;
+
+      if (recordCount === 0) {
+        html += `<p style="color: #64748b; font-size: 0.85rem; text-align: center;">No records published yet.</p>`;
+      } else {
+        if (hubProjects.length > 0) {
+          html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Case Studies</div>`;
+          for (const p of hubProjects) {
+            html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${p.name}</strong> — ${p.impact_area || '—'}. ${copyable(p.cid)}</p>`;
+          }
+          html += `</div>`;
+        }
+
+        if (hubInterviews.length > 0) {
+          html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Interviews</div>`;
+          for (const iv of hubInterviews) {
+            const cColor = iv.consent === 'public' ? '#22c55e' : iv.consent === 'anonymous' ? '#eab308' : '#ef4444';
+            html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${iv.title}</strong> <span style="color:${cColor}; font-size:0.7rem;">${iv.consent}</span>${iv.notes ? ' — ' + iv.notes.slice(0, 100) : ''}</p>`;
+          }
+          html += `</div>`;
+        }
+
+        if (hubMs.length > 0) {
+          html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Milestones</div>`;
+          for (const m of hubMs) {
+            const done = m.status === 'done' || m.status === 'completed';
+            html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;">${done ? '■' : '□'} <strong>${m.milestone}</strong> — <em style="color:${done ? '#22c55e' : '#94a3b8'}">${m.status}</em></p>`;
+          }
+          html += `</div>`;
+        }
+
+        if (hubBg.length > 0) {
+          html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Budget</div>`;
+          for (const b of hubBg) {
+            html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>Total:</strong> ${b.total_ada} ADA · <strong>Earned:</strong> ${b.earned_ada} ADA · ${b.interviews_done}/${b.interviews_target} interviews</p>`;
+          }
+          html += `</div>`;
+        }
+
+        if (hubTeams.length > 0) {
+          html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Team</div>`;
+          for (const t of hubTeams) {
+            html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${t.team_name}</strong> — ${t.region || '—'}. ${copyable(t.team_did)}</p>`;
+          }
+          html += `</div>`;
+        }
+
+        if (hubPb.length > 0) {
+          html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Playbook</div>`;
+          for (const p of hubPb) {
+            html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${p.title}</strong> — ${p.section}. <em style="color:#94a3b8">${p.status}</em></p>`;
+          }
+          html += `</div>`;
+        }
+      }
+
+      html += `<div style="text-align: center; color: #22c55e; font-size: 0.8rem; letter-spacing: 0.5em;">■ ■ ■</div>`;
+      html += `</div>`;
+    }
+
+    html += `<button onclick="renderLibrary()" class="w-full px-4 py-3 rounded bg-slate-700 hover:bg-slate-600 text-sm">Refresh Library</button>`;
+    html += `</div>`;
+    c.innerHTML = html;
   } catch (err) {
     c.innerHTML = errorBox(err);
   }
 }
 
 // ─── Init ─────────────────────────────────────────────────────
-setInterval(() => { if (currentStep === 'vitality') loadStep(); }, 30000);
+setInterval(() => { if (currentStep === 'library') loadStep(); }, 30000);
 loadStep();
 </script>
 </body>
