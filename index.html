@@ -571,50 +571,105 @@ function renderPublish() {
     { name: 'prisma.events.playbookSection', label: 'Playbook' },
   ];
 
-  Promise.all(collections.map(col => {
-    return fetch(`${pdsUrl}/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=${col.name}`)
-      .then(r => r.ok ? r.json() : { records: [] })
-      .then(data => ({ ...col, records: data.records || [] }))
-      .catch(() => ({ ...col, records: [] }));
-  })).then(results => {
-    const totalRecords = results.reduce((s, r) => s + r.records.length, 0);
+  // Fetch commit history + publications from PDS
+  Promise.all([
+    fetch(`${pdsUrl}/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(sessionDid)}`).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(`${pdsUrl}/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.hubPublication`).then(r => r.ok ? r.json() : { records: [] }).catch(() => ({ records: [] })),
+    fetch(`${pdsUrl}/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.enrollment`).then(r => r.ok ? r.json() : { records: [] }).catch(() => ({ records: [] })),
+  ]).then(([latestCommit, pubsData, enrollData]) => {
+    const pubs = pubsData.records || [];
+    const enrollments = enrollData.records || [];
+    const totalRev = latestCommit ? latestCommit.rev : 0;
 
-    let existingHtml = '';
-    if (totalRecords > 0) {
-      existingHtml = `
-        <div class="glass rounded-xl p-6 mb-6">
-          <h3 class="font-semibold text-green-300 mb-4">Your Published Records (${totalRecords})</h3>
-          <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
-            ${results.map(r => `<div class="text-center"><div class="text-2xl font-bold text-green-400">${r.records.length}</div><div class="text-xs text-slate-500 mt-1">${r.label}</div></div>`).join('')}
+    // Build commit history
+    let commitHistory = '';
+
+    // First commit = enrollment (the "initial commit")
+    if (enrollments.length > 0) {
+      const enroll = enrollments[0];
+      let enrollBody = {};
+      try { enrollBody = JSON.parse(new TextDecoder().decode(new Uint8Array(enroll.bytes || []))); } catch {}
+      commitHistory += `
+        <div class="flex items-start gap-3 mb-3">
+          <div class="flex flex-col items-center">
+            <div class="w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-xs font-bold">1</div>
+            <div class="w-0.5 h-full bg-slate-700"></div>
           </div>
-          <details class="text-xs text-slate-400">
-            <summary class="cursor-pointer hover:text-slate-200">Show details</summary>
-            <div class="mt-3 space-y-2">
-              ${results.filter(r => r.records.length > 0).map(r => `
-                <div><strong class="text-slate-300">${r.label}:</strong> ${r.records.length} record${r.records.length === 1 ? '' : 's'}
-                  ${r.records.map(rec => `<div class="text-xs text-slate-600 ml-3">· ${copyable(rec.cid)}</div>`).join('')}
-                </div>
-              `).join('')}
+          <div class="flex-1 pb-3">
+            <div class="glass rounded-lg p-4">
+              <div class="flex items-center justify-between">
+                <span class="text-sm font-medium text-green-300">Initial commit — Hub enrolled</span>
+                <span class="text-xs text-slate-600">rev 1</span>
+              </div>
+              <div class="text-xs text-slate-500 mt-1">Name: ${enrollBody.name || '—'} · Role: ${enrollBody.stakeholder_type || '—'} · Wallet: ${enrollBody.wallet_address || '—'}</div>
+              <div class="text-xs text-slate-600 mt-1">${copyable(enroll.cid)}</div>
             </div>
-          </details>
-        </div>
-      `;
+          </div>
+        </div>`;
+    }
+
+    // Publication commits
+    pubs.forEach((pub, i) => {
+      let pubBody = {};
+      try { pubBody = JSON.parse(new TextDecoder().decode(new Uint8Array(pub.bytes || []))); } catch {}
+      const rev = i + 2; // approximate rev
+      const sections = [];
+      if (pubBody.project && pubBody.project.name) sections.push('project');
+      if (pubBody.interview) sections.push('interview');
+      if (pubBody.milestone) sections.push('milestone');
+      if (pubBody.budget) sections.push('budget');
+      if (pubBody.team) sections.push('team');
+      if (pubBody.playbook) sections.push('playbook');
+      if (pubBody.video) sections.push('video');
+      const commitMsg = pubBody.title || 'Update publication';
+      const changes = sections.length > 0 ? `+ ${sections.join(', ')}` : '+ publication';
+
+      commitHistory += `
+        <div class="flex items-start gap-3 mb-3">
+          <div class="flex flex-col items-center">
+            <div class="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-xs font-bold">${rev}</div>
+            ${i < pubs.length - 1 ? '<div class="w-0.5 h-full bg-slate-700"></div>' : ''}
+          </div>
+          <div class="flex-1 pb-3">
+            <div class="glass rounded-lg p-4">
+              <div class="flex items-center justify-between">
+                <span class="text-sm font-medium text-green-300">${commitMsg}</span>
+                <span class="text-xs text-slate-600">rev ${rev}</span>
+              </div>
+              <div class="text-xs text-slate-500 mt-1 font-mono">${changes}</div>
+              <div class="text-xs text-slate-600 mt-1">${copyable(pub.cid)}</div>
+            </div>
+          </div>
+        </div>`;
+    });
+
+    if (enrollments.length === 0 && pubs.length === 0) {
+      commitHistory = `<div class="text-center text-slate-500 text-sm py-4">No commits yet. Publish your first record below.</div>`;
     }
 
     c.innerHTML = `
       <div class="max-w-3xl mx-auto fade-in">
         <div class="text-center mb-6">
           <h2 class="text-xl font-bold text-green-300">Publish Your Research</h2>
-          <p class="text-slate-400 text-sm mt-1">Fill in any section, then click Publish. Records are written to your PDS and signed.</p>
+          <p class="text-slate-400 text-sm mt-1">Fill in any section, then click Publish. Each publish is a new commit on your hub repo.</p>
         </div>
 
-        ${existingHtml}
+        <!-- Commit History (like GitHub) -->
+        <div class="glass rounded-xl p-6 mb-6">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="font-semibold text-green-300">Commit History</h3>
+            <span class="text-xs text-slate-500">${totalRev} commit${totalRev === 1 ? '' : 's'}</span>
+          </div>
+          ${commitHistory}
+        </div>
 
+        <!-- Publish form -->
         <div class="glass rounded-xl p-6 mb-4">
-          <h3 class="font-semibold text-green-300 mb-4">📋 Project / Case Study</h3>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div><label class="text-xs text-slate-500">Project Name</label>
-              <input id="pub-project-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Project name"></div>
+          <h3 class="font-semibold text-green-300 mb-4">New Publication</h3>
+          <div class="mb-4"><label class="text-xs text-slate-500">Publication Title</label>
+            <input id="pub-project-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Q3 Research Update"></div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
             <div><label class="text-xs text-slate-500">Impact Area</label>
               <input id="pub-project-impact" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Nairobi, Kenya"></div>
           </div>
@@ -652,7 +707,7 @@ function renderPublish() {
                 <input id="pub-bg-total" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="50000"></div>
               <div><label class="text-xs text-slate-500">Earned ADA</label>
                 <input id="pub-bg-earned" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="12000"></div>
-              <div><label class="text-xs text-slate-500">Interviews Done</label>
+              <div><label class="text-xs text-slate-500">Done</label>
                 <input id="pub-bg-done" type="number" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="8"></div>
               <div><label class="text-xs text-slate-500">Target</label>
                 <input id="pub-bg-target" type="number" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="20"></div>
@@ -664,10 +719,10 @@ function renderPublish() {
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div class="glass rounded-xl p-6">
-            <h3 class="font-semibold text-green-300 mb-4">👥 Local Team Member</h3>
+            <h3 class="font-semibold text-green-300 mb-4">👥 Team Member</h3>
             <div class="grid grid-cols-2 gap-2">
               <div><label class="text-xs text-slate-500">Name</label>
-                <input id="pub-lt-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Member name"></div>
+                <input id="pub-lt-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Name"></div>
               <div><label class="text-xs text-slate-500">DID</label>
                 <input id="pub-lt-did" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="did:cardano:..."></div>
               <div><label class="text-xs text-slate-500">Wallet</label>
@@ -681,24 +736,24 @@ function renderPublish() {
             <h3 class="font-semibold text-green-300 mb-4">📖 Playbook Section</h3>
             <div class="grid grid-cols-2 gap-2">
               <div><label class="text-xs text-slate-500">Section</label>
-                <input id="pub-pb-section" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Introduction"></div>
+                <input id="pub-pb-section" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Section"></div>
               <div><label class="text-xs text-slate-500">Title</label>
-                <input id="pub-pb-title" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Section title"></div>
+                <input id="pub-pb-title" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Title"></div>
               <div><label class="text-xs text-slate-500">Region</label>
                 <input id="pub-pb-region" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Region"></div>
             </div>
             <div class="mt-2"><label class="text-xs text-slate-500">Content</label>
-              <textarea id="pub-pb-content" class="w-full rounded px-3 py-2 mt-1 text-sm h-16" placeholder="The section text..."></textarea></div>
+              <textarea id="pub-pb-content" class="w-full rounded px-3 py-2 mt-1 text-sm h-16" placeholder="Content..."></textarea></div>
           </div>
         </div>
 
         <div class="glass rounded-xl p-6 mb-4">
           <h3 class="font-semibold text-green-300 mb-4">🎬 Video Evidence</h3>
           <input id="pub-vid-file" type="file" accept="video/*" class="text-sm mb-2" />
-          <p class="text-xs text-slate-500">Optional — upload a video clip. Stored as a blob on your PDS.</p>
+          <p class="text-xs text-slate-500">Optional — stored as a blob on your PDS.</p>
         </div>
 
-        <button id="pub-submit" onclick="publishAll()" class="w-full px-4 py-4 rounded bg-green-600 hover:bg-green-500 text-lg font-bold">Publish All Records →</button>
+        <button id="pub-submit" onclick="publishAll()" class="w-full px-4 py-4 rounded bg-green-600 hover:bg-green-500 text-lg font-bold">Commit & Publish →</button>
 
         <div class="flex gap-3 mt-4">
           <button onclick="document.querySelector('[data-step=\\'library\\']').click()" class="flex-1 px-4 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">View Library →</button>
