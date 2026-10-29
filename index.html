@@ -179,6 +179,7 @@ async function walletSignIn() {
     const session = await pdsPost('/xrpc/com.prisma.auth.login', { nonce: challenge.nonce, signature: sigResult.signature, key: sigResult.key });
     sessionToken = session.token;
     sessionDid = session.did;
+    localStorage.setItem('last-did', sessionDid);
     const btn = document.getElementById('wallet-btn');
     btn.textContent = 'Signed In'; btn.className = 'px-3 py-1 rounded bg-green-800 text-xs font-medium';
     const st = document.getElementById('session-status');
@@ -278,7 +279,7 @@ function renderRegister() {
 async function checkHubExists() {
   if (!sessionDid) return false;
   try {
-    const r = await pdsGet(`/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(sessionDid)}`);
+    const r = await pdsGet(`/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(libraryDid)}`);
     return r.rev > 0;
   } catch { return false; }
 }
@@ -384,14 +385,14 @@ function renderPublish() {
 
   // Get commit history from PDS
   Promise.all([
-    pdsGet(`/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(sessionDid)}`).catch(() => null),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.enrollment`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.project`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.interview`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.milestoneProgress`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.budgetAllocation`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.localTeam`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.playbookSection`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(libraryDid)}`).catch(() => null),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(libraryDid)}&collection=prisma.events.enrollment`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(libraryDid)}&collection=prisma.events.project`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(libraryDid)}&collection=prisma.events.interview`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(libraryDid)}&collection=prisma.events.milestoneProgress`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(libraryDid)}&collection=prisma.events.budgetAllocation`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(libraryDid)}&collection=prisma.events.localTeam`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(libraryDid)}&collection=prisma.events.playbookSection`).catch(() => ({ records: [] })),
   ]).then(([latestCommit, enroll, proj, iv, ms, bg, lt, pb]) => {
     const totalRev = latestCommit ? latestCommit.rev : 0;
     const counts = {
@@ -641,15 +642,30 @@ async function renderLibrary() {
       appviewEc = ecRes;
     } catch {}
 
-    // Then read directly from PDS (our own records — always current)
+    // Then read directly from PDS (always current, no relay needed)
+    // Use sessionDid if signed in, or a stored DID from localStorage, or
+    // discover DIDs from the relay's listDids endpoint
     let myRecords = {};
-    if (sessionDid && pdsUrl) {
+    let libraryDid = sessionDid || localStorage.getItem('last-did') || '';
+    
+    // If no DID, try to get DIDs from the relay
+    if (!libraryDid) {
+      try {
+        const relayUrl = appviewUrl ? appviewUrl.replace('prisma-indexer', 'prisma-gm47') : '';
+        if (relayUrl) {
+          const r = await fetch(`${relayUrl}/xrpc/com.prisma.sync.listDids`);
+          if (r.ok) { const d = await r.json(); if (d.dids && d.dids.length > 0) libraryDid = d.dids[0]; }
+        }
+      } catch {}
+    }
+
+    if (libraryDid && pdsUrl) {
       const collections = [
         'prisma.events.enrollment', 'prisma.events.project', 'prisma.events.interview',
         'prisma.events.milestoneProgress', 'prisma.events.budgetAllocation',
         'prisma.events.localTeam', 'prisma.events.playbookSection'
       ];
-      const results = await Promise.all(collections.map(col => pdsListRecords(sessionDid, col)));
+      const results = await Promise.all(collections.map(col => pdsListRecords(libraryDid, col)));
       collections.forEach((col, i) => { myRecords[col] = results[i]; });
     }
 
@@ -657,9 +673,9 @@ async function renderLibrary() {
     let allHubs = [...appviewHubs];
     if (myRecords['prisma.events.enrollment'] && myRecords['prisma.events.enrollment'].length > 0) {
       const enroll = myRecords['prisma.events.enrollment'][0].body;
-      if (!allHubs.find(h => h.did === sessionDid)) {
+      if (!allHubs.find(h => h.did === libraryDid)) {
         allHubs.push({
-          did: sessionDid, name: enroll.name || 'My Hub',
+          did: libraryDid, name: enroll.name || 'My Hub',
           stakeholder_type: enroll.stakeholder_type || '—',
           wallet_address: enroll.wallet_address || '—',
           enrolled_at: enroll.enrolled_at || '—',
@@ -709,14 +725,14 @@ async function renderLibrary() {
     }
 
     // Show our own hub's records from the PDS (always current, no relay needed)
-    if (myTotal > 0 && sessionDid) {
+    if (myTotal > 0 && libraryDid) {
       const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
       const enroll = (myRecords['prisma.events.enrollment'] || [{}])[0].body || {};
       html += `<div class="glass rounded-xl p-6 mb-6" style="font-family: Georgia, serif;">
         <div style="border-top: 3px double #22c55e; border-bottom: 3px double #22c55e; padding: 1rem 0; text-align: center; margin-bottom: 1rem;">
           <div style="font-size: 1.5rem; font-weight: 900; color: #bbf7d0;">${enroll.name || 'My Hub'}</div>
           <div style="font-size: 0.7rem; color: #64748b; letter-spacing: 0.15em; text-transform: uppercase; margin-top: 0.3rem;">${enroll.stakeholder_type || '—'} · ${today}</div>
-          <div style="font-size: 0.65rem; color: #475569; margin-top: 0.2rem;">${copyable(sessionDid)}</div>
+          <div style="font-size: 0.65rem; color: #475569; margin-top: 0.2rem;">${copyable(libraryDid)}</div>
         </div>`;
 
       // Projects
@@ -770,7 +786,7 @@ async function renderLibrary() {
         for (const v of vidSections) {
           const cidMatch = (v.body.content || '').match(/CID:\s*(bafkrei\w+)/);
           if (cidMatch) {
-            const videoUrl = `${pdsUrl}/xrpc/com.prisma.sync.getBlob?did=${encodeURIComponent(sessionDid)}&cid=${encodeURIComponent(cidMatch[1])}`;
+            const videoUrl = `${pdsUrl}/xrpc/com.prisma.sync.getBlob?did=${encodeURIComponent(libraryDid)}&cid=${encodeURIComponent(cidMatch[1])}`;
             html += `<div style="margin-top: 0.5rem;"><div style="font-size: 0.8rem; color: #94a3b8;">${v.body.title || 'Video'}</div><video controls src="${videoUrl}" style="width: 100%; border-radius: 0.5rem; margin-top: 0.3rem;" onerror="this.outerHTML='<p style=\\'color:#ef4444;font-size:0.8rem\\'>Video not available on PDS</p>'"></video></div>`;
           }
         }
