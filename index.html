@@ -739,16 +739,19 @@ async function publishAll() {
     const vidFile = document.getElementById('pub-vid-file');
     if (vidFile && vidFile.files && vidFile.files[0]) {
       const file = vidFile.files[0];
+      console.log('Video upload:', file.name, file.size, 'bytes,', file.type);
       if (file.size <= 50 * 1024 * 1024) {
-        toast('Uploading video...');
+        toast(`Uploading video (${Math.round(file.size / 1024 / 1024 * 10) / 10}MB)...`);
         const bytes = new Uint8Array(await file.arrayBuffer());
         const headers = { 'Content-Type': 'application/octet-stream' };
         if (sessionToken) headers['Authorization'] = 'Bearer ' + sessionToken;
-        const resp = await fetch(`${pdsUrl}/xrpc/com.prisma.repo.uploadBlob?did=${encodeURIComponent(sessionDid)}`, {
-          method: 'POST', headers, body: bytes
-        });
-        const text = await resp.text();
-        if (resp.ok) {
+        try {
+          const resp = await fetch(`${pdsUrl}/xrpc/com.prisma.repo.uploadBlob?did=${encodeURIComponent(sessionDid)}`, {
+            method: 'POST', headers, body: bytes
+          });
+          const text = await resp.text();
+          console.log('Video upload response:', resp.status, text);
+          if (!resp.ok) throw new Error(`PDS ${resp.status}: ${text}`);
           const blobRes = JSON.parse(text);
           await pdsPost('/xrpc/com.prisma.repo.createRecord', {
             collection: 'prisma.events.playbookSection', rkey: rkey(),
@@ -757,6 +760,9 @@ async function publishAll() {
             status: 'published', author: 'self', createdAt: now()
           });
           results.push('Video');
+        } catch (vidErr) {
+          console.error('Video upload error:', vidErr);
+          toast('Video upload failed: ' + vidErr.message, true);
         }
       } else { toast('Video too large (max 50MB), skipped', true); }
     }
