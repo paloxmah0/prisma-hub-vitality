@@ -3,14 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Prisma Hub Vitality</title>
+<title>Prisma CPC</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/cbor-web@9.0.2/dist/cbor.min.js"></script>
 <style>
   body { background: #0a0e14; font-family: 'Inter', system-ui, sans-serif; }
   .glass { background: rgba(20, 28, 40, 0.6); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.06); }
   .glow { box-shadow: 0 0 20px rgba(34, 197, 94, 0.15); }
-  .vitality-bar { background: linear-gradient(90deg, #22c55e, #14b8a6); }
   .pulse-dot { animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
   ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
@@ -28,7 +27,7 @@
 <div class="glass sticky top-0 z-50 px-6 py-3 flex items-center gap-4 flex-wrap">
   <div class="flex items-center gap-2">
     <div class="w-3 h-3 rounded-full bg-green-500 pulse-dot"></div>
-    <h1 class="text-lg font-bold tracking-tight">Prisma Hub Vitality</h1>
+    <h1 class="text-lg font-bold tracking-tight">Prisma CPC</h1>
   </div>
   <div class="flex-1"></div>
   <div class="flex items-center gap-2 text-sm">
@@ -47,7 +46,7 @@
 <nav id="stepper" class="px-6 pt-4 flex gap-6 text-sm font-medium">
   <button class="step step-active pb-2" data-step="connect">Connect</button>
   <button class="step pb-2" data-step="register">Register</button>
-  <button class="step pb-2" data-step="publish">Publish</button>
+  <button class="step pb-2" data-step="work">Work</button>
   <button class="step pb-2" data-step="library">Library</button>
 </nav>
 
@@ -74,9 +73,8 @@ let sessionDid = null;
 let walletApi = null;
 let rewardAddress = null;
 let currentStep = 'connect';
+let userRole = null; // 'hub' or 'member'
 let hubCreated = false;
-let selectedRole = null;
-let selectedRoleName = null;
 
 document.getElementById('appview-url').value = appviewUrl;
 document.getElementById('pds-url').value = pdsUrl;
@@ -92,50 +90,52 @@ function emptyState(title, sub) { return `<div class="text-center py-16"><div cl
 function errorBox(err) { return `<div class="text-red-400 text-sm">${err.message}</div>`; }
 
 // ─── API ──────────────────────────────────────────────────────
-// AppView: pure JSON GET, CORS *, no auth needed for public data
 async function appviewGet(path) {
   if (!appviewUrl) throw new Error('Set the AppView URL first');
-  const resp = await fetch(`${appviewUrl}${path}`);
+  const resp = await fetch(`${appviewUrl}${path}`, { signal: AbortSignal.timeout(30000) });
   if (!resp.ok) throw new Error(`AppView ${resp.status}: ${await resp.text()}`);
   return resp.json();
 }
 
-// PDS JSON POST: sends JSON, returns JSON
 async function pdsPost(path, body) {
   if (!pdsUrl) throw new Error('Set the PDS URL first');
   const headers = { 'Content-Type': 'application/json' };
   if (sessionToken) headers['Authorization'] = 'Bearer ' + sessionToken;
   let resp;
-  try {
-    resp = await fetch(`${pdsUrl}${path}`, { method: 'POST', headers, body: JSON.stringify(body) });
-  } catch (e) { throw new Error(`Cannot reach PDS at ${pdsUrl} (${e.message})`); }
+  try { resp = await fetch(`${pdsUrl}${path}`, { method: 'POST', headers, body: JSON.stringify(body) }); }
+  catch (e) { throw new Error(`Cannot reach PDS (${e.message})`); }
   const text = await resp.text();
   if (!resp.ok) throw new Error(`PDS ${resp.status}: ${text}`);
   return text ? JSON.parse(text) : {};
 }
 
-// PDS raw bytes upload: application/octet-stream, NOT JSON
 async function pdsUploadBlob(did, arrayBuffer) {
   if (!pdsUrl) throw new Error('Set the PDS URL first');
   const headers = { 'Content-Type': 'application/octet-stream' };
   if (sessionToken) headers['Authorization'] = 'Bearer ' + sessionToken;
-  let resp;
-  try {
-    resp = await fetch(`${pdsUrl}/xrpc/com.prisma.repo.uploadBlob?did=${encodeURIComponent(did)}`, {
-      method: 'POST', headers, body: arrayBuffer
-    });
-  } catch (e) { throw new Error(`Cannot reach PDS for upload (${e.message})`); }
+  const resp = await fetch(`${pdsUrl}/xrpc/com.prisma.repo.uploadBlob?did=${encodeURIComponent(did)}`, { method: 'POST', headers, body: arrayBuffer });
   const text = await resp.text();
   if (!resp.ok) throw new Error(`PDS ${resp.status}: ${text}`);
   return JSON.parse(text);
 }
 
-// PDS GET (no auth): getLatestCommit, listRecords, getBlob
 async function pdsGet(path) {
   if (!pdsUrl) throw new Error('Set the PDS URL first');
   const resp = await fetch(`${pdsUrl}${path}`);
   if (!resp.ok) throw new Error(`PDS ${resp.status}: ${await resp.text()}`);
   return resp.json();
+}
+
+// Decode PDS listRecords CBOR
+async function pdsListRecords(did, collection) {
+  try {
+    const data = await pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(did)}&collection=${collection}`);
+    return (data.records || []).map(rec => {
+      let body = {};
+      try { body = cbor.decode(new Uint8Array(rec.bytes || [])); } catch {}
+      return { rkey: rec.rkey, cid: rec.cid, body };
+    });
+  } catch { return []; }
 }
 
 // ─── Wallet ───────────────────────────────────────────────────
@@ -147,7 +147,6 @@ async function walletSignIn() {
     const wallets = Object.keys(window.cardano || {}).filter(k => window.cardano[k].enable);
     if (wallets.length === 0) { toast('No Cardano wallet found', true); return; }
 
-    // Try each wallet until one works
     let enabled = null, walletName = null;
     for (const w of wallets) {
       try { enabled = await window.cardano[w].enable(); walletName = w; walletApi = enabled; break; }
@@ -185,7 +184,7 @@ async function walletSignIn() {
     const st = document.getElementById('session-status');
     st.textContent = short(sessionDid, 20); st.className = 'text-xs text-green-400';
     toast('Signed in!');
-    updateStepper(); loadStep();
+    loadStep();
   } catch (err) { console.error('walletSignIn error:', err); toast('Sign-in failed: ' + err.message, true); }
 }
 
@@ -205,23 +204,13 @@ document.querySelectorAll('.step').forEach(btn => {
   });
 });
 
-function updateStepper() {
-  ['connect','register','publish','library'].forEach((s) => {
-    const btn = document.querySelector(`[data-step="${s}"]`);
-    if (!btn) return;
-    btn.classList.remove('step-active');
-    if (s === currentStep) btn.classList.add('step-active');
-  });
-}
-
 function loadStep() {
   const content = document.getElementById('content');
   content.innerHTML = '<div class="text-slate-500 text-sm">Loading...</div>';
-  updateStepper();
   switch (currentStep) {
     case 'connect': renderConnect(); break;
     case 'register': renderRegister(); break;
-    case 'publish': renderPublish(); break;
+    case 'work': renderWork(); break;
     case 'library': renderLibrary(); break;
   }
 }
@@ -233,14 +222,14 @@ function renderConnect() {
   c.innerHTML = `
     <div class="max-w-2xl mx-auto fade-in">
       <div class="glass rounded-xl p-8 mb-6">
-        <h2 class="text-xl font-bold text-green-300 mb-2">Welcome to Prisma Hub Vitality</h2>
-        <p class="text-slate-400 text-sm mb-6">Your data stays on your disk. Signed, content-addressed, yours.</p>
+        <h2 class="text-xl font-bold text-green-300 mb-2">Prisma CPC</h2>
+        <p class="text-slate-400 text-sm mb-6">Teams do primary research on their PDS. Hubs compile case studies referencing team work. Your data stays on your disk.</p>
         <div class="space-y-3">
           <div class="flex items-center gap-3 ${signedIn ? 'text-green-400' : 'text-slate-500'}"><span>${signedIn ? '✅' : '⬜'}</span><span class="text-sm">Set PDS and AppView URLs (top bar)</span></div>
           <div class="flex items-center gap-3 ${signedIn ? 'text-green-400' : 'text-slate-500'}"><span>${signedIn ? '✅' : '⬜'}</span><span class="text-sm">Connect your Cardano wallet</span></div>
-          <div class="flex items-center gap-3 text-slate-500"><span>⬜</span><span class="text-sm">Register your hub</span></div>
-          <div class="flex items-center gap-3 text-slate-500"><span>⬜</span><span class="text-sm">Publish research (projects, interviews, milestones, budgets, team, playbook, video)</span></div>
-          <div class="flex items-center gap-3 text-slate-500"><span>⬜</span><span class="text-sm">Read the Library — all hubs' published research</span></div>
+          <div class="flex items-center gap-3 text-slate-500"><span>⬜</span><span class="text-sm">Register as a Hub or Team Member</span></div>
+          <div class="flex items-center gap-3 text-slate-500"><span>⬜</span><span class="text-sm">Do your work (primary research or compile case study)</span></div>
+          <div class="flex items-center gap-3 text-slate-500"><span>⬜</span><span class="text-sm">Read the Library — all hubs' compiled case studies with linked team evidence</span></div>
         </div>
       </div>
       ${signedIn ? `
@@ -258,101 +247,115 @@ function renderConnect() {
 }
 
 // ─── Step 2: Register ─────────────────────────────────────────
-const STAKEHOLDER_TYPES = [
-  { name: 'Participant', id: 'ODpx0p', icon: '👤' },
-  { name: 'Community of Place', id: '5BkzBo', icon: '🌍' },
-  { name: 'Community of Practice', id: 'n9J7rK', icon: '🔗' },
-  { name: 'Partner', id: 'wQB7El', icon: '🤝' },
-];
-
 function renderRegister() {
   const c = document.getElementById('content');
   if (!sessionToken) { c.innerHTML = emptyState('Not signed in', 'Connect your wallet first.'); return; }
+
+  // Check if already registered
   c.innerHTML = '<div class="text-slate-500 text-sm">Checking...</div>';
   checkHubExists().then(exists => {
     hubCreated = exists;
-    if (exists) renderHubOverview();
-    else renderRoleSelection();
-  }).catch(() => renderRoleSelection());
+    if (exists) {
+      // Check what role they registered as
+      pdsListRecords(sessionDid, 'prisma.events.enrollment').then(records => {
+        if (records.length > 0) {
+          const enroll = records[0].body;
+          userRole = (enroll.stakeholder_type === '5BkzBo' || enroll.stakeholder_type === '5BkzBo2') ? 'hub' : 'member';
+        }
+        renderHubOverview();
+      }).catch(() => renderHubOverview());
+    } else {
+      renderRoleChoice();
+    }
+  }).catch(() => renderRoleChoice());
 }
 
 async function checkHubExists() {
   if (!sessionDid) return false;
   try {
     const r = await pdsGet(`/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(sessionDid)}`);
-    return r.rev > 0;
+    return r.rev && r.rev !== '' && r.rev !== 0;
   } catch { return false; }
 }
 
-async function renderHubOverview() {
+function renderHubOverview() {
   const c = document.getElementById('content');
-  let hubInfo = null;
-  try { const hubsRes = await appviewGet('/api/research/hubs'); hubInfo = (hubsRes.hubs || []).find(h => h.did === sessionDid); } catch {}
-  c.innerHTML = `
-    <div class="max-w-2xl mx-auto fade-in">
-      <div class="glass rounded-xl p-6 mb-6 glow">
-        <div class="flex items-center gap-3 mb-4"><span class="text-2xl">✅</span><div><h3 class="font-semibold text-green-300">Hub registered</h3></div></div>
-        ${hubInfo ? `<div class="space-y-2 text-sm text-slate-300">
-          <div><span class="text-slate-600">Name:</span> ${hubInfo.name}</div>
-          <div><span class="text-slate-600">Role:</span> ${hubInfo.stakeholder_type}</div>
-          <div><span class="text-slate-600">DID:</span> ${copyable(hubInfo.did)}</div>
-          <div><span class="text-slate-600">Wallet:</span> ${copyable(hubInfo.wallet_address)}</div>
-        </div>` : '<div class="text-xs text-slate-500">Hub exists on PDS, waiting for indexer...</div>'}
-      </div>
-      <button onclick="document.querySelector('[data-step=\\'publish\\']').click()" class="w-full px-4 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Publish Research →</button>
-    </div>`;
-  hubCreated = true;
+  pdsListRecords(sessionDid, 'prisma.events.enrollment').then(records => {
+    const enroll = (records[0] || {}).body || {};
+    c.innerHTML = `
+      <div class="max-w-2xl mx-auto fade-in">
+        <div class="glass rounded-xl p-6 mb-6 glow">
+          <div class="flex items-center gap-3 mb-4"><span class="text-2xl">✅</span><div><h3 class="font-semibold text-green-300">Registered as ${userRole === 'hub' ? 'Hub' : 'Team Member'}</h3></div></div>
+          <div class="space-y-2 text-sm text-slate-300">
+            <div><span class="text-slate-600">Name:</span> ${enroll.name || '—'}</div>
+            <div><span class="text-slate-600">Role:</span> ${enroll.stakeholder_type || '—'}</div>
+            <div><span class="text-slate-600">DID:</span> ${copyable(sessionDid)}</div>
+          </div>
+        </div>
+        <button onclick="document.querySelector('[data-step=\\'work\\']').click()" class="w-full px-4 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Go to Work →</button>
+      </div>`;
+  }).catch(() => {
+    c.innerHTML = `<div class="max-w-2xl mx-auto fade-in"><div class="glass rounded-xl p-6 glow"><h3 class="font-semibold text-green-300">Registered</h3><button onclick="document.querySelector('[data-step=\\'work\\']').click()" class="w-full mt-4 px-4 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Go to Work →</button></div></div>`;
+  });
 }
 
-function renderRoleSelection() {
+function renderRoleChoice() {
   const c = document.getElementById('content');
-  if (selectedRole) { renderRegDetails(); return; }
   c.innerHTML = `
     <div class="max-w-3xl mx-auto fade-in">
-      <div class="text-center mb-6"><h2 class="text-xl font-bold text-green-300">Choose your role</h2></div>
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-        ${STAKEHOLDER_TYPES.map(t => `<div class="glass rounded-xl p-6 cursor-pointer hover:border-green-500/30 transition text-center" onclick="selectRole('${t.id}','${t.name}')"><div class="text-4xl mb-3">${t.icon}</div><h3 class="font-semibold text-green-300">${t.name}</h3></div>`).join('')}
+      <div class="text-center mb-6"><h2 class="text-xl font-bold text-green-300">Register</h2><p class="text-slate-400 text-sm mt-1">Choose your role in the CPC.</p></div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="glass rounded-xl p-6 cursor-pointer hover:border-green-500/30 transition" onclick="selectRole('hub')">
+          <div class="text-4xl mb-3">🏛️</div>
+          <h3 class="font-semibold text-green-300 mb-2">Hub</h3>
+          <p class="text-xs text-slate-500 mb-3">Compiles case studies from team members' primary research. Writes playbook, manages budget and milestones. References team members' records.</p>
+          <div class="text-xs text-slate-600">You write: case studies, playbook, budget, milestones</div>
+        </div>
+        <div class="glass rounded-xl p-6 cursor-pointer hover:border-green-500/30 transition" onclick="selectRole('member')">
+          <div class="text-4xl mb-3">🔬</div>
+          <h3 class="font-semibold text-green-300 mb-2">Team Member</h3>
+          <p class="text-xs text-slate-500 mb-3">Does primary field research. Writes interviews, questionnaires, evidence, photos, videos. Your data stays on your PDS. Hubs reference your work.</p>
+          <div class="text-xs text-slate-600">You write: interviews, questionnaires, evidence, videos</div>
+        </div>
       </div>
     </div>`;
 }
 
-function selectRole(id, name) { selectedRole = id; selectedRoleName = name; renderRegDetails(); }
-
-function renderRegDetails() {
+function selectRole(role) {
+  userRole = role;
   const c = document.getElementById('content');
+  const roleName = role === 'hub' ? 'Hub' : 'Team Member';
+  const stakeholderType = role === 'hub' ? '5BkzBo' : 'ODpx0p';
+
   c.innerHTML = `
     <div class="max-w-2xl mx-auto fade-in">
       <div class="glass rounded-xl p-6 mb-6">
-        <div class="text-lg font-semibold text-green-300 mb-4">${selectedRoleName}</div>
+        <div class="text-lg font-semibold text-green-300 mb-4">${roleName}</div>
         <div class="space-y-4">
-          <div><label class="text-xs text-slate-500">Name</label><input id="reg-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Your name or hub name"></div>
+          <div><label class="text-xs text-slate-500">Name</label><input id="reg-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="${role === 'hub' ? 'Hub name' : 'Your name'}"></div>
           <div><label class="text-xs text-slate-500">Wallet Address</label><input id="reg-wallet" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="addr1..."></div>
           <div><label class="text-xs text-slate-500">Region</label><input id="reg-region" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Nairobi, Kenya"></div>
         </div>
       </div>
       <div class="flex gap-3">
-        <button onclick="selectedRole=null;selectedRoleName=null;renderRoleSelection()" class="px-4 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">← Back</button>
-        <button id="reg-submit" onclick="submitRegistration()" class="flex-1 px-4 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Register & Create Hub →</button>
+        <button onclick="renderRoleChoice()" class="px-4 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">← Back</button>
+        <button id="reg-submit" onclick="submitRegistration('${stakeholderType}')" class="flex-1 px-4 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Register →</button>
       </div>
     </div>`;
 }
 
-async function submitRegistration() {
+async function submitRegistration(stakeholderType) {
   const btn = document.getElementById('reg-submit');
   if (btn) { btn.disabled = true; btn.textContent = 'Creating...'; }
   try {
     if (!sessionDid) { toast('Not signed in', true); return; }
     const name = val('reg-name'); if (!name) { toast('Name required', true); return; }
-    const stakeholderType = selectedRole || 'ODpx0p';
     const walletAddress = val('reg-wallet') || 'unknown';
-    const region = val('reg-region');
 
-    // 1. initiateRepo (creates repo + internal enrollment at rkey="self")
-    toast('Creating hub repo...');
+    toast('Creating repo...');
     try { await pdsPost('/xrpc/com.prisma.repo.initiateRepo', { did: sessionDid, stakeholder_type: stakeholderType, name, wallet_address: walletAddress }); }
-    catch (e) { if (e.message.includes('409')) toast('Hub already exists, continuing...'); else throw e; }
+    catch (e) { if (e.message.includes('409')) toast('Already exists, continuing...'); else throw e; }
 
-    // 2. createRecord enrollment (emits RecordCreated so indexer projects it)
     toast('Recording enrollment...');
     await pdsPost('/xrpc/com.prisma.repo.createRecord', {
       collection: 'prisma.events.enrollment', rkey: 'self',
@@ -360,473 +363,386 @@ async function submitRegistration() {
       did: sessionDid, enrolled_at: now()
     });
 
-    // 3. createRecord project if region
-    if (region) {
-      toast('Creating project...');
-      await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-        collection: 'prisma.events.project', rkey: rkey(),
-        name, impactArea: region, createdAt: now()
-      });
-    }
-
     hubCreated = true;
-    toast('Hub registered!');
-    setTimeout(() => { document.querySelector('[data-step="publish"]').click(); }, 1500);
-  } catch (e) { toast(e.message, true); if (btn) { btn.disabled = false; btn.textContent = 'Register & Create Hub →'; } }
+    toast('Registered!');
+    setTimeout(() => { document.querySelector('[data-step="work"]').click(); }, 1500);
+  } catch (e) { toast(e.message, true); if (btn) { btn.disabled = false; btn.textContent = 'Register →'; } }
 }
 
-// ─── Step 3: Publish ───────────────────────────────────────────
-// Uses the existing collections with EXACT field names the indexer expects.
-// All records in one publish share a batch prefix so they're linked.
-function renderPublish() {
+// ─── Step 3: Work ─────────────────────────────────────────────
+function renderWork() {
   const c = document.getElementById('content');
   if (!sessionToken) { c.innerHTML = emptyState('Not signed in', 'Connect your wallet first.'); return; }
-  c.innerHTML = '<div class="text-slate-500 text-sm">Loading...</div>';
+  if (!hubCreated) {
+    c.innerHTML = `<div class="max-w-2xl mx-auto fade-in"><div class="glass rounded-xl p-6 text-center"><h3 class="text-slate-300 mb-2">Not registered</h3><button onclick="document.querySelector('[data-step=\\'register\\']').click()" class="px-4 py-2 rounded bg-green-600 hover:bg-green-500 text-sm">Register →</button></div></div>`;
+    return;
+  }
 
-  // Get commit history from PDS
-  Promise.all([
-    pdsGet(`/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(sessionDid)}`).catch(() => null),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.enrollment`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.project`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.interview`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.milestoneProgress`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.budgetAllocation`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.localTeam`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.playbookSection`).catch(() => ({ records: [] })),
-  ]).then(([latestCommit, enroll, proj, iv, ms, bg, lt, pb]) => {
-    const totalRev = latestCommit ? latestCommit.rev : 0;
-    const counts = {
-      enrollment: (enroll.records || []).length,
-      project: (proj.records || []).length,
-      interview: (iv.records || []).length,
-      milestone: (ms.records || []).length,
-      budget: (bg.records || []).length,
-      team: (lt.records || []).length,
-      playbook: (pb.records || []).length,
-    };
-    const totalRecords = Object.values(counts).reduce((a, b) => a + b, 0);
-
-    c.innerHTML = `
-      <div class="max-w-3xl mx-auto fade-in">
-        <div class="text-center mb-6">
-          <h2 class="text-xl font-bold text-green-300">Publish Your Research</h2>
-          <p class="text-slate-400 text-sm mt-1">Fill in any section, then click Publish. Each section writes a separate signed record to your PDS.</p>
-        </div>
-
-        <!-- Commit History -->
-        <div class="glass rounded-xl p-6 mb-6">
-          <div class="flex items-center justify-between mb-4">
-            <h3 class="font-semibold text-green-300">Commit History</h3>
-            <span class="text-xs text-slate-500">${totalRev} commits · ${totalRecords} records</span>
-          </div>
-          <div class="grid grid-cols-4 md:grid-cols-7 gap-2 mb-3">
-            <div class="text-center"><div class="text-lg font-bold text-green-400">${counts.enrollment}</div><div class="text-xs text-slate-500">Enroll</div></div>
-            <div class="text-center"><div class="text-lg font-bold text-green-400">${counts.project}</div><div class="text-xs text-slate-500">Projects</div></div>
-            <div class="text-center"><div class="text-lg font-bold text-green-400">${counts.interview}</div><div class="text-xs text-slate-500">Interviews</div></div>
-            <div class="text-center"><div class="text-lg font-bold text-green-400">${counts.milestone}</div><div class="text-xs text-slate-500">Milestones</div></div>
-            <div class="text-center"><div class="text-lg font-bold text-green-400">${counts.budget}</div><div class="text-xs text-slate-500">Budgets</div></div>
-            <div class="text-center"><div class="text-lg font-bold text-green-400">${counts.team}</div><div class="text-xs text-slate-500">Team</div></div>
-            <div class="text-center"><div class="text-lg font-bold text-green-400">${counts.playbook}</div><div class="text-xs text-slate-500">Playbook</div></div>
-          </div>
-        </div>
-
-        <!-- Form: exact field names matching the indexer's handle.rs -->
-        <div class="glass rounded-xl p-6 mb-4">
-          <h3 class="font-semibold text-green-300 mb-4">📋 Project</h3>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div><label class="text-xs text-slate-500">Name</label><input id="p-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Project name"></div>
-            <div><label class="text-xs text-slate-500">Impact Area</label><input id="p-impact" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Nairobi, Kenya"></div>
-          </div>
-        </div>
-
-        <div class="glass rounded-xl p-6 mb-4">
-          <h3 class="font-semibold text-green-300 mb-4">🎤 Interview</h3>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div><label class="text-xs text-slate-500">Title</label><input id="iv-title" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Interview title"></div>
-            <div><label class="text-xs text-slate-500">Consent</label><select id="iv-consent" class="w-full rounded px-3 py-2 mt-1 text-sm"><option value="public">Public</option><option value="anonymous">Anonymous</option><option value="private">Private</option></select></div>
-          </div>
-          <div class="mt-3"><label class="text-xs text-slate-500">Notes</label><textarea id="iv-notes" class="w-full rounded px-3 py-2 mt-1 text-sm h-20" placeholder="Interview notes..."></textarea></div>
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-          <div class="glass rounded-xl p-6">
-            <h3 class="font-semibold text-green-300 mb-4">🏁 Milestone</h3>
-            <div><label class="text-xs text-slate-500">Milestone</label><input id="ms-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Onboarding complete"></div>
-            <div class="mt-2"><label class="text-xs text-slate-500">Status</label><select id="ms-status" class="w-full rounded px-3 py-2 mt-1 text-sm"><option value="pending">Pending</option><option value="in_progress">In Progress</option><option value="done">Done</option></select></div>
-          </div>
-          <div class="glass rounded-xl p-6">
-            <h3 class="font-semibold text-green-300 mb-4">💰 Budget</h3>
-            <div class="grid grid-cols-2 gap-2">
-              <div><label class="text-xs text-slate-500">Total ADA</label><input id="bg-total" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="50000"></div>
-              <div><label class="text-xs text-slate-500">Earned ADA</label><input id="bg-earned" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="12000"></div>
-              <div><label class="text-xs text-slate-500">Done</label><input id="bg-done" type="number" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="8"></div>
-              <div><label class="text-xs text-slate-500">Target</label><input id="bg-target" type="number" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="20"></div>
-              <div><label class="text-xs text-slate-500">Location</label><input id="bg-loc" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Location"></div>
-            </div>
-          </div>
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-          <div class="glass rounded-xl p-6">
-            <h3 class="font-semibold text-green-300 mb-4">👥 Team Member</h3>
-            <div class="grid grid-cols-2 gap-2">
-              <div><label class="text-xs text-slate-500">Name</label><input id="lt-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Name"></div>
-              <div><label class="text-xs text-slate-500">DID</label><input id="lt-did" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="did:cardano:..."></div>
-              <div><label class="text-xs text-slate-500">Wallet</label><input id="lt-wallet" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="addr1..."></div>
-              <div><label class="text-xs text-slate-500">Region</label><input id="lt-region" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Region"></div>
-            </div>
-          </div>
-          <div class="glass rounded-xl p-6">
-            <h3 class="font-semibold text-green-300 mb-4">📖 Playbook Section</h3>
-            <div class="grid grid-cols-2 gap-2">
-              <div><label class="text-xs text-slate-500">Section</label><input id="pb-section" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Section"></div>
-              <div><label class="text-xs text-slate-500">Title</label><input id="pb-title" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Title"></div>
-              <div><label class="text-xs text-slate-500">Region</label><input id="pb-region" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Region"></div>
-            </div>
-            <div class="mt-2"><label class="text-xs text-slate-500">Content</label><textarea id="pb-content" class="w-full rounded px-3 py-2 mt-1 text-sm h-16" placeholder="Content..."></textarea></div>
-          </div>
-        </div>
-
-        <div class="glass rounded-xl p-6 mb-4">
-          <h3 class="font-semibold text-green-300 mb-4">🎬 Video Evidence</h3>
-          <input id="vid-file" type="file" accept="video/*" class="text-sm mb-2" />
-          <p class="text-xs text-slate-500">Raw bytes uploaded to PDS blob store. CID stored in a playbook section record.</p>
-        </div>
-
-        <button id="pub-submit" onclick="publishAll()" class="w-full px-4 py-4 rounded bg-green-600 hover:bg-green-500 text-lg font-bold">Publish →</button>
-        <div class="flex gap-3 mt-4">
-          <button onclick="document.querySelector('[data-step=\\'library\\']').click()" class="flex-1 px-4 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">View Library →</button>
-        </div>
-      </div>`;
-  });
+  // Route based on role
+  if (userRole === 'hub') renderHubWork();
+  else renderMemberWork();
 }
 
-async function publishAll() {
-  const btn = document.getElementById('pub-submit');
-  if (btn) { btn.disabled = true; btn.textContent = 'Publishing...'; }
-  const results = [];
+// ─── Member Work: primary research ────────────────────────────
+async function renderMemberWork() {
+  const c = document.getElementById('content');
+  c.innerHTML = '<div class="text-slate-500 text-sm">Loading your research...</div>';
 
-  try {
-    // Upload video first (raw bytes via application/octet-stream)
-    const vidFile = document.getElementById('vid-file');
-    if (vidFile && vidFile.files && vidFile.files[0]) {
-      const file = vidFile.files[0];
-      if (file.size > 50 * 1024 * 1024) { toast('Video too large (max 50MB)', true); }
-      else {
-        toast(`Uploading video (${Math.round(file.size / 1024 / 1024 * 10) / 10}MB)...`);
-        try {
-          const arrayBuffer = await file.arrayBuffer();
-          const blobRes = await pdsUploadBlob(sessionDid, arrayBuffer);
-          console.log('Blob uploaded:', blobRes);
-          // Store video reference as a playbook section (indexer projects it)
-          await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-            collection: 'prisma.events.playbookSection', rkey: rkey(),
-            hubName: sessionDid, region: 'media', section: 'video',
-            title: file.name, content: 'Video CID: ' + blobRes.cid,
-            status: 'published', author: sessionDid, createdAt: now()
-          });
-          results.push('Video');
-        } catch (e) { console.error('Video upload error:', e); toast('Video upload failed: ' + e.message, true); }
-      }
-    }
+  // Load existing records from PDS
+  const [interviews, questionnaires, evidence, playbook] = await Promise.all([
+    pdsListRecords(sessionDid, 'prisma.events.interview'),
+    pdsListRecords(sessionDid, 'prisma.events.playbookSection').then(r => r.filter(x => x.body.section === 'questionnaire')),
+    pdsListRecords(sessionDid, 'prisma.events.playbookSection').then(r => r.filter(x => x.body.section === 'evidence' || x.body.section === 'video')),
+    pdsListRecords(sessionDid, 'prisma.events.enrollment'),
+  ]);
 
-    // Project (field names: name, impactArea, createdAt — camelCase!)
-    if (val('p-name')) {
-      toast('Writing project...');
-      await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-        collection: 'prisma.events.project', rkey: rkey(),
-        name: val('p-name'), impactArea: val('p-impact'), createdAt: now()
-      });
-      results.push('Project');
-    }
+  const enroll = (playbook[0] || {}).body || {};
+  const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
-    // Interview (field names: title, subject:{uri,cid}, consent, notes, createdAt)
-    if (val('iv-title')) {
-      toast('Writing interview...');
-      await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-        collection: 'prisma.events.interview', rkey: rkey(),
-        title: val('iv-title'), subject: { uri: '', cid: '' },
-        consent: val('iv-consent'), notes: val('iv-notes'), createdAt: now()
-      });
-      results.push('Interview');
-    }
+  c.innerHTML = `
+    <div class="max-w-4xl mx-auto fade-in">
+      <div class="glass rounded-xl p-6 mb-6">
+        <div class="flex items-center justify-between mb-4">
+          <div><h2 class="text-lg font-bold text-green-300">${enroll.name || 'Team Member'}</h2><div class="text-xs text-slate-500 mt-1">${copyable(sessionDid)}</div></div>
+          <div class="text-right"><div class="text-sm text-slate-400">${interviews.length} interviews · ${questionnaires.length} questionnaires · ${evidence.length} evidence files</div></div>
+        </div>
+      </div>
 
-    // Milestone (field names: hubName, milestone, status, completedAt — camelCase!)
-    if (val('ms-name')) {
-      toast('Writing milestone...');
-      await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-        collection: 'prisma.events.milestoneProgress', rkey: rkey(),
-        hubName: val('p-name') || 'Hub', milestone: val('ms-name'),
-        status: val('ms-status'), completedAt: now()
-      });
-      results.push('Milestone');
-    }
+      <!-- New interview -->
+      <div class="glass rounded-xl p-6 mb-4">
+        <h3 class="font-semibold text-green-300 mb-4">🎤 Record Interview</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div><label class="text-xs text-slate-500">Title</label><input id="iv-title" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Interview title"></div>
+          <div><label class="text-xs text-slate-500">Consent</label><select id="iv-consent" class="w-full rounded px-3 py-2 mt-1 text-sm"><option value="public">Public</option><option value="anonymous">Anonymous</option><option value="private">Private</option></select></div>
+        </div>
+        <div class="mt-3"><label class="text-xs text-slate-500">Participant Name</label><input id="iv-participant" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Who was interviewed"></div>
+        <div class="mt-3"><label class="text-xs text-slate-500">Notes / Transcription</label><textarea id="iv-notes" class="w-full rounded px-3 py-2 mt-1 text-sm h-24" placeholder="What was said, what was heard..."></textarea></div>
+        <button onclick="createInterview()" class="mt-3 px-4 py-2 rounded bg-green-600 hover:bg-green-500 text-sm">Record Interview</button>
+      </div>
 
-    // Budget (field names: hubName, location, totalAda, earnedAda, interviewsDone, interviewsTarget, playbookStatus)
-    if (val('bg-total') || val('bg-earned')) {
-      toast('Writing budget...');
-      await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-        collection: 'prisma.events.budgetAllocation', rkey: rkey(),
-        hubName: val('p-name') || 'Hub', location: val('bg-loc'),
-        totalAda: val('bg-total') || '0', earnedAda: val('bg-earned') || '0',
-        interviewsDone: parseInt(val('bg-done')) || 0, interviewsTarget: parseInt(val('bg-target')) || 0,
-        playbookStatus: 'draft'
-      });
-      results.push('Budget');
-    }
+      <!-- Questionnaire -->
+      <div class="glass rounded-xl p-6 mb-4">
+        <h3 class="font-semibold text-green-300 mb-4">📋 Create Questionnaire</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div><label class="text-xs text-slate-500">Title</label><input id="q-title" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Questionnaire title"></div>
+          <div><label class="text-xs text-slate-500">Region</label><input id="q-region" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Region"></div>
+        </div>
+        <div class="mt-3"><label class="text-xs text-slate-500">Questions (one per line)</label><textarea id="q-questions" class="w-full rounded px-3 py-2 mt-1 text-sm h-24" placeholder="What is your name?&#10;How long have you lived here?&#10;What challenges do you face?"></textarea></div>
+        <button onclick="createQuestionnaire()" class="mt-3 px-4 py-2 rounded bg-green-600 hover:bg-green-500 text-sm">Create Questionnaire</button>
+      </div>
 
-    // Local team (field names: teamName, teamDid, walletAddress, hubName, region, interviewsDone, earnedAda)
-    if (val('lt-name')) {
-      toast('Writing team member...');
-      await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-        collection: 'prisma.events.localTeam', rkey: rkey(),
-        teamName: val('lt-name'), teamDid: val('lt-did'),
-        walletAddress: val('lt-wallet'), hubName: sessionDid,
-        region: val('lt-region'), interviewsDone: 0, earnedAda: '0'
-      });
-      results.push('Team');
-    }
+      <!-- Evidence upload -->
+      <div class="glass rounded-xl p-6 mb-4">
+        <h3 class="font-semibold text-green-300 mb-4">📸 Upload Evidence</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div><label class="text-xs text-slate-500">Title</label><input id="ev-title" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Community meeting photo"></div>
+          <div><label class="text-xs text-slate-500">Description</label><input id="ev-desc" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="What is this evidence"></div>
+        </div>
+        <div class="mt-3"><label class="text-xs text-slate-500">File (photo, video, document)</label><input id="ev-file" type="file" class="w-full text-sm mt-1"></div>
+        <button onclick="uploadEvidence()" class="mt-3 px-4 py-2 rounded bg-green-600 hover:bg-green-500 text-sm">Upload Evidence</button>
+      </div>
 
-    // Playbook (field names: hubName, region, section, title, content, status, author, createdAt)
-    if (val('pb-title')) {
-      toast('Writing playbook section...');
-      await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-        collection: 'prisma.events.playbookSection', rkey: rkey(),
-        hubName: sessionDid, region: val('pb-region'), section: val('pb-section'),
-        title: val('pb-title'), content: val('pb-content'),
-        status: 'published', author: sessionDid, createdAt: now()
-      });
-      results.push('Playbook');
-    }
+      <!-- Existing records -->
+      ${interviews.length > 0 ? `<div class="glass rounded-xl p-6 mb-4"><h3 class="font-semibold text-green-300 mb-3">Your Interviews (${interviews.length})</h3>${interviews.map(iv => `<div class="border-l-2 border-slate-700 pl-3 mb-2"><div class="text-sm">${iv.body.title || 'Untitled'}</div><div class="text-xs text-slate-500">${iv.body.consent || 'private'} · ${copyable(iv.cid)}</div></div>`).join('')}</div>` : ''}
+      ${questionnaires.length > 0 ? `<div class="glass rounded-xl p-6 mb-4"><h3 class="font-semibold text-green-300 mb-3">Your Questionnaires (${questionnaires.length})</h3>${questionnaires.map(q => `<div class="border-l-2 border-slate-700 pl-3 mb-2"><div class="text-sm">${q.body.title || 'Untitled'}</div><div class="text-xs text-slate-500">${copyable(q.cid)}</div></div>`).join('')}</div>` : ''}
+      ${evidence.length > 0 ? `<div class="glass rounded-xl p-6 mb-4"><h3 class="font-semibold text-green-300 mb-3">Your Evidence (${evidence.length})</h3>${evidence.map(e => `<div class="border-l-2 border-slate-700 pl-3 mb-2"><div class="text-sm">${e.body.title || 'Untitled'}</div><div class="text-xs text-slate-500">${e.body.section || 'evidence'} · ${copyable(e.cid)}</div></div>`).join('')}</div>` : ''}
 
-    toast(`Published: ${results.join(', ')}`);
-    if (btn) { btn.disabled = false; btn.textContent = 'Publish →'; }
-    setTimeout(() => { document.querySelector('[data-step="library"]').click(); }, 2000);
-  } catch (e) { console.error('publishAll error:', e); toast(e.message, true); if (btn) { btn.disabled = false; btn.textContent = 'Publish →'; } }
+      <button onclick="document.querySelector('[data-step=\\'library\\']').click()" class="w-full px-4 py-3 rounded bg-slate-700 hover:bg-slate-600 text-sm">View Library →</button>
+    </div>`;
 }
 
-// ─── Step 4: Library ──────────────────────────────────────────
-// Reads from the AppView (pure JSON, already projected by the indexer)
-// ─── Step 4: Library ──────────────────────────────────────────
-// Reads directly from the PDS (always up-to-date) AND the AppView (cross-hub).
-// The PDS is the source of truth — the relay/indexer/AppView are derived.
-// Like Bluesky: writes go to PDS, reads can come from PDS or AppView.
-
-// Decode a PDS listRecords response — bytes are CBOR (DAG-CBOR)
-async function pdsListRecords(did, collection) {
+async function createInterview() {
   try {
-    const data = await pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(did)}&collection=${collection}`);
-    return (data.records || []).map(rec => {
-      let body = {};
-      try { body = cbor.decode(new Uint8Array(rec.bytes || [])); } catch { try { body = JSON.parse(new TextDecoder().decode(new Uint8Array(rec.bytes || []))); } catch {} }
-      return { rkey: rec.rkey, cid: rec.cid, body };
+    const title = val('iv-title'); if (!title) return toast('Title required', true);
+    await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+      collection: 'prisma.events.interview', rkey: rkey(),
+      title, consent: val('iv-consent'), notes: val('iv-notes'),
+      participant_name: val('iv-participant'), createdAt: now()
     });
-  } catch { return []; }
+    toast('Interview recorded!');
+    setTimeout(() => renderWork(), 1500);
+  } catch (e) { toast(e.message, true); }
 }
 
+async function createQuestionnaire() {
+  try {
+    const title = val('q-title'); if (!title) return toast('Title required', true);
+    const questions = val('q-questions').split('\n').filter(q => q.trim());
+    await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+      collection: 'prisma.events.playbookSection', rkey: rkey(),
+      hubName: sessionDid, region: val('q-region'), section: 'questionnaire',
+      title, content: JSON.stringify(questions), status: 'draft', author: sessionDid, createdAt: now()
+    });
+    toast('Questionnaire created!');
+    setTimeout(() => renderWork(), 1500);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function uploadEvidence() {
+  try {
+    const title = val('ev-title'); if (!title) return toast('Title required', true);
+    const fileInput = document.getElementById('ev-file');
+    if (!fileInput || !fileInput.files || !fileInput.files[0]) return toast('Choose a file', true);
+    const file = fileInput.files[0];
+    if (file.size > 50 * 1024 * 1024) return toast('File too large (max 50MB)', true);
+
+    toast(`Uploading ${file.name}...`);
+    const arrayBuffer = await file.arrayBuffer();
+    const blobRes = await pdsUploadBlob(sessionDid, arrayBuffer);
+
+    await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+      collection: 'prisma.events.playbookSection', rkey: rkey(),
+      hubName: sessionDid, region: 'evidence', section: file.type.startsWith('video/') ? 'video' : 'evidence',
+      title, content: `Evidence: ${val('ev-desc') || ''} | CID: ${blobRes.cid}`,
+      status: 'published', author: sessionDid, createdAt: now()
+    });
+    toast('Evidence uploaded!');
+    setTimeout(() => renderWork(), 1500);
+  } catch (e) { toast(e.message, true); }
+}
+
+// ─── Hub Work: compile case study ────────────────────────────
+async function renderHubWork() {
+  const c = document.getElementById('content');
+  c.innerHTML = '<div class="text-slate-500 text-sm">Loading hub dashboard...</div>';
+
+  // Load hub's own records
+  const [enrollments, projects, milestones, budgets, playbook] = await Promise.all([
+    pdsListRecords(sessionDid, 'prisma.events.enrollment'),
+    pdsListRecords(sessionDid, 'prisma.events.project'),
+    pdsListRecords(sessionDid, 'prisma.events.milestoneProgress'),
+    pdsListRecords(sessionDid, 'prisma.events.budgetAllocation'),
+    pdsListRecords(sessionDid, 'prisma.events.playbookSection'),
+  ]);
+
+  const enroll = (enrollments[0] || {}).body || {};
+
+  // Try to discover team members from the relay/AppView
+  let allHubs = [];
+  try { const hubsRes = await appviewGet('/api/research/hubs'); allHubs = hubsRes.hubs || []; } catch {}
+
+  c.innerHTML = `
+    <div class="max-w-4xl mx-auto fade-in">
+      <div class="glass rounded-xl p-6 mb-6">
+        <div class="flex items-center justify-between mb-4">
+          <div><h2 class="text-lg font-bold text-green-300">${enroll.name || 'Hub'}</h2><div class="text-xs text-slate-500 mt-1">${copyable(sessionDid)}</div></div>
+          <div class="text-right"><div class="text-sm text-slate-400">${projects.length} case studies · ${milestones.length} milestones · ${budgets.length} budgets</div></div>
+        </div>
+      </div>
+
+      <!-- Team member discovery -->
+      <div class="glass rounded-xl p-6 mb-4">
+        <h3 class="font-semibold text-green-300 mb-4">👥 Team Members</h3>
+        <p class="text-xs text-slate-500 mb-3">Enter a team member's DID to reference their primary research in your case study.</p>
+        <div><label class="text-xs text-slate-500">Team Member DID</label><input id="team-did" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="did:cardano:stake1..."></div>
+        <button onclick="discoverMember()" class="mt-3 px-4 py-2 rounded bg-green-600 hover:bg-green-500 text-sm">Find Member's Research</button>
+        <div id="member-research" class="mt-4"></div>
+      </div>
+
+      <!-- Compile case study -->
+      <div class="glass rounded-xl p-6 mb-4">
+        <h3 class="font-semibold text-green-300 mb-4">📖 Compile Case Study</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div><label class="text-xs text-slate-500">Case Study Name</label><input id="cs-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Case study title"></div>
+          <div><label class="text-xs text-slate-500">Impact Area</label><input id="cs-impact" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Nairobi, Kenya"></div>
+        </div>
+        <div class="mt-3"><label class="text-xs text-slate-500">Referenced Member DIDs (comma-separated)</label><input id="cs-members" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="did:cardano:member1, did:cardano:member2"></div>
+        <div class="mt-3"><label class="text-xs text-slate-500">Summary</label><textarea id="cs-summary" class="w-full rounded px-3 py-2 mt-1 text-sm h-20" placeholder="Compiled findings from team members' research..."></textarea></div>
+        <button onclick="createCaseStudy()" class="mt-3 px-4 py-2 rounded bg-green-600 hover:bg-green-500 text-sm">Compile Case Study</button>
+      </div>
+
+      <!-- Playbook -->
+      <div class="glass rounded-xl p-6 mb-4">
+        <h3 class="font-semibold text-green-300 mb-4">📝 Playbook Section</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div><label class="text-xs text-slate-500">Section</label><input id="pb-section" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Methodology"></div>
+          <div><label class="text-xs text-slate-500">Title</label><input id="pb-title" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Section title"></div>
+        </div>
+        <div class="mt-3"><label class="text-xs text-slate-500">Content</label><textarea id="pb-content" class="w-full rounded px-3 py-2 mt-1 text-sm h-20" placeholder="The methodology or process..."></textarea></div>
+        <button onclick="createPlaybook()" class="mt-3 px-4 py-2 rounded bg-green-600 hover:bg-green-500 text-sm">Write Playbook Section</button>
+      </div>
+
+      <!-- Budget + Milestone (side by side) -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div class="glass rounded-xl p-6">
+          <h3 class="font-semibold text-green-300 mb-4">💰 Budget</h3>
+          <div class="grid grid-cols-2 gap-2">
+            <div><label class="text-xs text-slate-500">Total ADA</label><input id="bg-total" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="50000"></div>
+            <div><label class="text-xs text-slate-500">Earned ADA</label><input id="bg-earned" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="12000"></div>
+            <div><label class="text-xs text-slate-500">Interviews Done</label><input id="bg-done" type="number" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="8"></div>
+            <div><label class="text-xs text-slate-500">Target</label><input id="bg-target" type="number" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="20"></div>
+          </div>
+          <button onclick="createBudget()" class="mt-3 px-4 py-2 rounded bg-green-600 hover:bg-green-500 text-sm">Record Budget</button>
+        </div>
+        <div class="glass rounded-xl p-6">
+          <h3 class="font-semibold text-green-300 mb-4">🏁 Milestone</h3>
+          <div><label class="text-xs text-slate-500">Milestone</label><input id="ms-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Fieldwork complete"></div>
+          <div class="mt-2"><label class="text-xs text-slate-500">Status</label><select id="ms-status" class="w-full rounded px-3 py-2 mt-1 text-sm"><option value="pending">Pending</option><option value="in_progress">In Progress</option><option value="done">Done</option></select></div>
+          <button onclick="createMilestone()" class="mt-3 px-4 py-2 rounded bg-green-600 hover:bg-green-500 text-sm">Record Milestone</button>
+        </div>
+      </div>
+
+      <button onclick="document.querySelector('[data-step=\\'library\\']').click()" class="w-full px-4 py-3 rounded bg-slate-700 hover:bg-slate-600 text-sm">View Library →</button>
+    </div>`;
+}
+
+async function discoverMember() {
+  const did = val('team-did');
+  if (!did) return toast('Enter a DID', true);
+  const el = document.getElementById('member-research');
+  el.innerHTML = '<div class="text-slate-500 text-sm">Searching...</div>';
+
+  // Read the member's records from their PDS (via our PDS's getRecord, or via AppView)
+  let memberInterviews = [];
+  let memberEvidence = [];
+
+  // Try AppView first (if relay synced their PDS)
+  try {
+    const cs = await appviewGet('/api/research/case-studies');
+    memberInterviews = (cs.case_studies || []).flatMap(p => (p.interviews || [])).filter(iv => iv.did === did);
+  } catch {}
+
+  // Try reading from their PDS directly (if we know their PDS URL)
+  try {
+    const records = await pdsListRecords(did, 'prisma.events.interview');
+    memberInterviews = memberInterviews.concat(records.map(r => ({ title: r.body.title, consent: r.body.consent, notes: r.body.notes, cid: r.cid })));
+  } catch {}
+
+  if (memberInterviews.length === 0) {
+    el.innerHTML = `<div class="text-xs text-slate-500">No interviews found for this member. They may not have published yet, or their PDS isn't synced.</div>`;
+  } else {
+    el.innerHTML = `<div class="text-xs text-slate-400 mb-2">Found ${memberInterviews.length} interviews:</div>${memberInterviews.map(iv => `<div class="border-l-2 border-green-500/30 pl-3 mb-2"><div class="text-sm">${iv.title || 'Untitled'}</div><div class="text-xs text-slate-500">${iv.consent || 'private'} · ${copyable(iv.cid)}</div></div>`).join('')}`;
+  }
+}
+
+async function createCaseStudy() {
+  try {
+    const name = val('cs-name'); if (!name) return toast('Name required', true);
+    const members = val('cs-members').split(',').map(m => m.trim()).filter(m => m);
+    await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+      collection: 'prisma.events.project', rkey: rkey(),
+      name, impactArea: val('cs-impact'), createdAt: now(),
+      referencedMembers: members, summary: val('cs-summary')
+    });
+    toast('Case study compiled!');
+    setTimeout(() => renderWork(), 1500);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function createPlaybook() {
+  try {
+    const title = val('pb-title'); if (!title) return toast('Title required', true);
+    await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+      collection: 'prisma.events.playbookSection', rkey: rkey(),
+      hubName: sessionDid, section: val('pb-section'), title,
+      content: val('pb-content'), status: 'published', author: sessionDid, createdAt: now()
+    });
+    toast('Playbook section written!');
+    setTimeout(() => renderWork(), 1500);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function createBudget() {
+  try {
+    await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+      collection: 'prisma.events.budgetAllocation', rkey: rkey(),
+      hubName: sessionDid, totalAda: val('bg-total') || '0', earnedAda: val('bg-earned') || '0',
+      interviewsDone: parseInt(val('bg-done')) || 0, interviewsTarget: parseInt(val('bg-target')) || 0,
+      playbookStatus: 'draft'
+    });
+    toast('Budget recorded!');
+    setTimeout(() => renderWork(), 1500);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function createMilestone() {
+  try {
+    const m = val('ms-name'); if (!m) return toast('Milestone required', true);
+    await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+      collection: 'prisma.events.milestoneProgress', rkey: rkey(),
+      hubName: sessionDid, milestone: m, status: val('ms-status'), completedAt: now()
+    });
+    toast('Milestone recorded!');
+    setTimeout(() => renderWork(), 1500);
+  } catch (e) { toast(e.message, true); }
+}
+
+// ─── Step 4: Library ──────────────────────────────────────────
 async function renderLibrary() {
   const c = document.getElementById('content');
-  c.innerHTML = '<div class="text-slate-500 text-sm">Loading library from PDS...</div>';
+  c.innerHTML = '<div class="text-slate-500 text-sm">Loading library...</div>';
 
   try {
-    // First try AppView (cross-hub, but may be empty if relay is broken)
-    let appviewHubs = [], appviewCs = [], appviewEc = null;
-    try {
-      const [hubsRes, csRes, ecRes] = await Promise.all([
-        appviewGet('/api/research/hubs'),
-        appviewGet('/api/research/case-studies'),
-        appviewGet('/api/research/event-contract')
-      ]);
-      appviewHubs = hubsRes.hubs || [];
-      appviewCs = csRes.case_studies || [];
-      appviewEc = ecRes;
-    } catch {}
+    // Get all hubs from AppView
+    let hubs = [];
+    try { const hubsRes = await appviewGet('/api/research/hubs'); hubs = hubsRes.hubs || []; } catch {}
 
-    // Then read directly from PDS (always current, no relay needed)
-    // Use sessionDid if signed in, or a stored DID from localStorage, or
-    // discover DIDs from the relay's listDids endpoint
-    let myRecords = {};
+    // Also read our own PDS records
     let libraryDid = sessionDid || localStorage.getItem('last-did') || '';
-    
-    // If no DID, try to get DIDs from the relay
-    if (!libraryDid) {
-      try {
-        const relayUrl = appviewUrl ? appviewUrl.replace('prisma-indexer', 'prisma-gm47') : '';
-        if (relayUrl) {
-          const r = await fetch(`${relayUrl}/xrpc/com.prisma.sync.listDids`);
-          if (r.ok) { const d = await r.json(); if (d.dids && d.dids.length > 0) libraryDid = d.dids[0]; }
-        }
-      } catch {}
-    }
-
+    let myRecords = {};
     if (libraryDid && pdsUrl) {
-      const collections = [
-        'prisma.events.enrollment', 'prisma.events.project', 'prisma.events.interview',
-        'prisma.events.milestoneProgress', 'prisma.events.budgetAllocation',
-        'prisma.events.localTeam', 'prisma.events.playbookSection'
-      ];
+      const collections = ['prisma.events.enrollment', 'prisma.events.project', 'prisma.events.interview', 'prisma.events.milestoneProgress', 'prisma.events.budgetAllocation', 'prisma.events.playbookSection'];
       const results = await Promise.all(collections.map(col => pdsListRecords(libraryDid, col)));
       collections.forEach((col, i) => { myRecords[col] = results[i]; });
     }
 
-    // Build a unified hub list: AppView hubs + our own PDS enrollment
-    let allHubs = [...appviewHubs];
-    if (myRecords['prisma.events.enrollment'] && myRecords['prisma.events.enrollment'].length > 0) {
-      const enroll = myRecords['prisma.events.enrollment'][0].body;
-      if (!allHubs.find(h => h.did === libraryDid)) {
-        allHubs.push({
-          did: libraryDid, name: enroll.name || 'My Hub',
-          stakeholder_type: enroll.stakeholder_type || '—',
-          wallet_address: enroll.wallet_address || '—',
-          enrolled_at: enroll.enrolled_at || '—',
-          cid: myRecords['prisma.events.enrollment'][0].cid
-        });
-      }
-    }
+    const myEnroll = (myRecords['prisma.events.enrollment'] || [{}])[0] || {};
+    const myProjects = myRecords['prisma.events.project'] || [];
+    const myInterviews = myRecords['prisma.events.interview'] || [];
+    const myMilestones = myRecords['prisma.events.milestoneProgress'] || [];
+    const myBudgets = myRecords['prisma.events.budgetAllocation'] || [];
+    const myPlaybook = myRecords['prisma.events.playbookSection'] || [];
+    const myTotal = myProjects.length + myInterviews.length + myMilestones.length + myBudgets.length + myPlaybook.length;
 
-    // Count my PDS records
-    const myCounts = {
-      project: (myRecords['prisma.events.project'] || []).length,
-      interview: (myRecords['prisma.events.interview'] || []).length,
-      milestone: (myRecords['prisma.events.milestoneProgress'] || []).length,
-      budget: (myRecords['prisma.events.budgetAllocation'] || []).length,
-      team: (myRecords['prisma.events.localTeam'] || []).length,
-      playbook: (myRecords['prisma.events.playbookSection'] || []).length,
-    };
-    const myTotal = Object.values(myCounts).reduce((a, b) => a + b, 0);
-
-    if (allHubs.length === 0 && appviewCs.length === 0 && myTotal === 0) {
-      c.innerHTML = `<div class="max-w-2xl mx-auto fade-in"><div class="glass rounded-xl p-8 text-center">
-        <h2 class="text-lg font-bold text-green-300 mb-2">The Library is empty</h2>
-        <p class="text-slate-400 text-sm mb-6">No hubs have published yet.</p>
-        ${sessionToken ? `<button onclick="document.querySelector('[data-step=\\'publish\\']').click()" class="px-6 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Publish Research →</button>`
-          : `<button onclick="document.querySelector('[data-step=\\'register\\']').click()" class="px-6 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Register Your Hub →</button>`}
-      </div></div>`;
+    if (hubs.length === 0 && myTotal === 0) {
+      c.innerHTML = `<div class="max-w-2xl mx-auto fade-in"><div class="glass rounded-xl p-8 text-center"><h2 class="text-lg font-bold text-green-300 mb-2">Library is empty</h2><p class="text-slate-400 text-sm mb-6">No one has published yet.</p>${sessionToken ? `<button onclick="document.querySelector('[data-step=\\'work\\']').click()" class="px-6 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Start Working →</button>` : `<button onclick="document.querySelector('[data-step=\\'register\\']').click()" class="px-6 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Register →</button>`}</div></div>`;
       return;
     }
 
     let html = '<div class="max-w-5xl mx-auto fade-in">';
-    html += `<div class="text-center mb-6"><h2 class="text-xl font-bold text-green-300">The Research Library</h2>`;
-    html += `<p class="text-slate-400 text-sm mt-1">${allHubs.length} hub${allHubs.length===1?'':'s'} · ${myTotal} records on your PDS · ${appviewCs.length} on AppView</p></div>`;
+    html += `<div class="text-center mb-6"><h2 class="text-xl font-bold text-green-300">Library</h2><p class="text-slate-400 text-sm mt-1">${hubs.length} hub${hubs.length===1?'':'s'} on AppView · ${myTotal} records on your PDS</p></div>`;
 
-    // AppView cross-hub data (if available)
-    if (appviewEc) {
-      const budgets = appviewEc.budgets || [];
-      const totalDone = budgets.reduce((s, b) => s + b.interviews_done, 0);
-      const totalTarget = budgets.reduce((s, b) => s + b.interviews_target, 0);
-      const pct = totalTarget > 0 ? Math.round((totalDone / totalTarget) * 100) : 0;
-      if (budgets.length > 0) {
-        html += `<div class="glass rounded-xl p-6 mb-6">
-          <h3 class="text-sm font-medium text-slate-300 mb-3">Cross-hub Progress (AppView)</h3>
-          <div class="w-full bg-slate-800 rounded-full h-4 overflow-hidden mb-2"><div class="vitality-bar h-4 rounded-full" style="width: ${pct}%"></div></div>
-          <div class="text-right text-xs text-slate-500">${totalDone}/${totalTarget} interviews (${pct}%)</div>
-        </div>`;
-      }
-    }
-
-    // Show our own hub's records from the PDS (always current, no relay needed)
+    // Our own records from PDS
     if (myTotal > 0 && libraryDid) {
       const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-      const enroll = (myRecords['prisma.events.enrollment'] || [{}])[0].body || {};
       html += `<div class="glass rounded-xl p-6 mb-6" style="font-family: Georgia, serif;">
         <div style="border-top: 3px double #22c55e; border-bottom: 3px double #22c55e; padding: 1rem 0; text-align: center; margin-bottom: 1rem;">
-          <div style="font-size: 1.5rem; font-weight: 900; color: #bbf7d0;">${enroll.name || 'My Hub'}</div>
-          <div style="font-size: 0.7rem; color: #64748b; letter-spacing: 0.15em; text-transform: uppercase; margin-top: 0.3rem;">${enroll.stakeholder_type || '—'} · ${today}</div>
+          <div style="font-size: 1.5rem; font-weight: 900; color: #bbf7d0;">${myEnroll.body?.name || 'My Hub'}</div>
+          <div style="font-size: 0.7rem; color: #64748b; letter-spacing: 0.15em; text-transform: uppercase; margin-top: 0.3rem;">${myEnroll.body?.stakeholder_type || '—'} · ${today}</div>
           <div style="font-size: 0.65rem; color: #475569; margin-top: 0.2rem;">${copyable(libraryDid)}</div>
         </div>`;
 
-      // Projects
-      const projects = myRecords['prisma.events.project'] || [];
-      if (projects.length > 0) {
-        html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Case Studies (${projects.length})</div>`;
-        for (const p of projects) { html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${p.body.name || 'Untitled'}</strong> — ${p.body.impactArea || '—'}. ${copyable(p.cid)}</p>`; }
-        html += `</div>`;
-      }
+      if (myProjects.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; color: #22c55e; text-transform: uppercase;">Case Studies</div>`;
+        for (const p of myProjects) { html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${p.body.name || 'Untitled'}</strong> — ${p.body.impactArea || '—'}`; if (p.body.referencedMembers) { html += ` · References: ${p.body.referencedMembers.length} member(s)`; } html += `</p>`; }
+        html += `</div>`; }
 
-      // Interviews
-      const interviews = myRecords['prisma.events.interview'] || [];
-      if (interviews.length > 0) {
-        html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Interviews (${interviews.length})</div>`;
-        for (const iv of interviews) { const cColor = iv.body.consent === 'public' ? '#22c55e' : iv.body.consent === 'anonymous' ? '#eab308' : '#ef4444';
-          html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${iv.body.title || 'Untitled'}</strong> <span style="color:${cColor}; font-size:0.7rem;">${iv.body.consent || 'private'}</span>${iv.body.notes ? ' — ' + iv.body.notes.slice(0, 120) : ''}</p>`; }
-        html += `</div>`;
-      }
+      if (myInterviews.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; color: #22c55e; text-transform: uppercase;">Primary Research (${myInterviews.length})</div>`;
+        for (const iv of myInterviews) { const cColor = iv.body.consent === 'public' ? '#22c55e' : iv.body.consent === 'anonymous' ? '#eab308' : '#ef4444';
+          html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${iv.body.title || 'Untitled'}</strong> <span style="color:${cColor}; font-size:0.7rem;">${iv.body.consent || 'private'}</span></p>`; }
+        html += `</div>`; }
 
-      // Milestones
-      const milestones = myRecords['prisma.events.milestoneProgress'] || [];
-      if (milestones.length > 0) {
-        html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Milestones (${milestones.length})</div>`;
-        for (const m of milestones) { const done = m.body.status === 'done' || m.body.status === 'completed';
-          html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;">${done ? '■' : '□'} <strong>${m.body.milestone || '—'}</strong> — <em style="color:${done ? '#22c55e' : '#94a3b8'}">${m.body.status || '—'}</em></p>`; }
-        html += `</div>`;
-      }
+      if (myMilestones.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; color: #22c55e; text-transform: uppercase;">Milestones</div>`;
+        for (const m of myMilestones) { const done = m.body.status === 'done'; html += `<p style="font-size: 0.85rem; color: #cbd5e1;">${done ? '■' : '□'} <strong>${m.body.milestone || '—'}</strong> — ${m.body.status || '—'}</p>`; }
+        html += `</div>`; }
 
-      // Budgets
-      const budgets = myRecords['prisma.events.budgetAllocation'] || [];
-      if (budgets.length > 0) {
-        html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Budget (${budgets.length})</div>`;
-        for (const b of budgets) {
-          html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>Total:</strong> ${b.body.totalAda || '0'} ADA · <strong>Earned:</strong> ${b.body.earnedAda || '0'} ADA · ${b.body.interviewsDone || 0}/${b.body.interviewsTarget || 0} interviews</p>`; }
-        html += `</div>`;
-      }
+      if (myBudgets.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; color: #22c55e; text-transform: uppercase;">Budget</div>`;
+        for (const b of myBudgets) { html += `<p style="font-size: 0.85rem; color: #cbd5e1;">Total: ${b.body.totalAda || '0'} ADA · Earned: ${b.body.earnedAda || '0'} ADA</p>`; }
+        html += `</div>`; }
 
-      // Team
-      const teams = myRecords['prisma.events.localTeam'] || [];
-      if (teams.length > 0) {
-        html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Team (${teams.length})</div>`;
-        for (const t of teams) { html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${t.body.teamName || '—'}</strong> — ${t.body.region || '—'}. ${copyable(t.body.teamDid)}</p>`; }
-        html += `</div>`;
-      }
-
-      // Video + Playbook
-      const playbook = myRecords['prisma.events.playbookSection'] || [];
-      const vidSections = playbook.filter(p => p.body.section === 'video');
-      if (vidSections.length > 0) {
-        html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Video Evidence (${vidSections.length})</div>`;
-        for (const v of vidSections) {
-          const cidMatch = (v.body.content || '').match(/CID:\s*(bafkrei\w+)/);
-          if (cidMatch) {
-            const videoUrl = `${pdsUrl}/xrpc/com.prisma.sync.getBlob?did=${encodeURIComponent(sessionDid)}&cid=${encodeURIComponent(cidMatch[1])}`;
-            html += `<div style="margin-top: 0.5rem;"><div style="font-size: 0.8rem; color: #94a3b8;">${v.body.title || 'Video'}</div><video controls src="${videoUrl}" style="width: 100%; border-radius: 0.5rem; margin-top: 0.3rem;" onerror="this.outerHTML='<p style=\\'color:#ef4444;font-size:0.8rem\\'>Video not available on PDS</p>'"></video></div>`;
-          }
-        }
-        html += `</div>`;
-      }
-      const pbSections = playbook.filter(p => p.body.section !== 'video');
-      if (pbSections.length > 0) {
-        html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Playbook (${pbSections.length})</div>`;
-        for (const p of pbSections) { html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${p.body.title || '—'}</strong> — ${p.body.section || '—'}. <em style="color:#94a3b8">${p.body.status || '—'}</em></p>`; }
-        html += `</div>`;
-      }
+      if (myPlaybook.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; color: #22c55e; text-transform: uppercase;">Playbook & Evidence</div>`;
+        for (const p of myPlaybook) { html += `<p style="font-size: 0.85rem; color: #cbd5e1;"><strong>${p.body.title || '—'}</strong> — ${p.body.section || '—'}</p>`; }
+        html += `</div>`; }
 
       html += `<div style="text-align: center; color: #22c55e; font-size: 0.8rem; letter-spacing: 0.5em;">■ ■ ■</div></div>`;
     }
 
-    // Show other hubs from AppView (if relay is working)
-    for (const hub of appviewHubs) {
-      if (hub.did === sessionDid) continue; // already shown above
-      const hProjs = appviewCs.filter(cs => cs.did === hub.did);
-      const hMs = (appviewEc?.milestones || []).filter(m => m.did === hub.did);
-      const hBg = (appviewEc?.budgets || []).filter(b => b.did === hub.did);
-      const hTeams = (appviewEc?.local_teams || []).filter(t => t.did === hub.did);
-      const hPb = (appviewEc?.playbook_sections || []).filter(p => p.did === hub.did);
-      const total = hProjs.length + hMs.length + hBg.length + hTeams.length + hPb.length;
-      if (total === 0) continue;
-
-      const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-      html += `<div class="glass rounded-xl p-6 mb-6" style="font-family: Georgia, serif;">
-        <div style="border-top: 3px double #22c55e; border-bottom: 3px double #22c55e; padding: 1rem 0; text-align: center; margin-bottom: 1rem;">
-          <div style="font-size: 1.5rem; font-weight: 900; color: #bbf7d0;">${hub.name}</div>
-          <div style="font-size: 0.7rem; color: #64748b; letter-spacing: 0.15em; text-transform: uppercase; margin-top: 0.3rem;">${hub.stakeholder_type} · ${today}</div>
-        </div>`;
-      if (hProjs.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; color: #22c55e; text-transform: uppercase;">Case Studies</div>`;
-        for (const p of hProjs) { html += `<p style="font-size: 0.85rem; color: #cbd5e1;"><strong>${p.name}</strong> — ${p.impact_area || '—'}</p>`; } html += `</div>`; }
-      if (hMs.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; color: #22c55e; text-transform: uppercase;">Milestones</div>`;
-        for (const m of hMs) { html += `<p style="font-size: 0.85rem; color: #cbd5e1;">■ <strong>${m.milestone}</strong> — ${m.status}</p>`; } html += `</div>`; }
-      html += `<div style="text-align: center; color: #22c55e; font-size: 0.8rem; letter-spacing: 0.5em;">■ ■ ■</div></div>`;
+    // Other hubs from AppView
+    for (const hub of hubs) {
+      if (hub.did === libraryDid) continue;
+      html += `<div class="glass rounded-xl p-6 mb-4"><h3 class="font-semibold text-green-300">${hub.name}</h3><div class="text-xs text-slate-500 mt-1">${hub.stakeholder_type} · ${copyable(hub.did)}</div></div>`;
     }
 
-    html += `<button onclick="renderLibrary()" class="w-full px-4 py-3 rounded bg-slate-700 hover:bg-slate-600 text-sm mt-4">Refresh Library</button></div>`;
+    html += `<button onclick="renderLibrary()" class="w-full px-4 py-3 rounded bg-slate-700 hover:bg-slate-600 text-sm mt-4">Refresh</button></div>`;
     c.innerHTML = html;
   } catch (err) { c.innerHTML = errorBox(err); }
 }
