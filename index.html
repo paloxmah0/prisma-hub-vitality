@@ -60,6 +60,7 @@
 <!-- Toast -->
 <div id="toast" class="fixed bottom-6 right-6 hidden glass px-4 py-3 rounded-lg text-sm glow"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/cbor@9.0.2/dist/cbor.min.js"></script>
 <script>
 // ─── Bech32 ───────────────────────────────────────────────────
 const BECH32_ALPHABET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
@@ -588,7 +589,7 @@ function renderPublish() {
     if (enrollments.length > 0) {
       const enroll = enrollments[0];
       let enrollBody = {};
-      try { enrollBody = JSON.parse(new TextDecoder().decode(new Uint8Array(enroll.bytes || []))); } catch {}
+      try { enrollBody = cbor.decode(new Uint8Array(enroll.bytes || [])); } catch { enrollBody = {}; }
       commitHistory += `
         <div class="flex items-start gap-3 mb-3">
           <div class="flex flex-col items-center">
@@ -611,7 +612,7 @@ function renderPublish() {
     // Publication commits
     pubs.forEach((pub, i) => {
       let pubBody = {};
-      try { pubBody = JSON.parse(new TextDecoder().decode(new Uint8Array(pub.bytes || []))); } catch {}
+      try { pubBody = cbor.decode(new Uint8Array(pub.bytes || [])); } catch { pubBody = {}; }
       const rev = i + 2; // approximate rev
       const sections = [];
       if (pubBody.project && pubBody.project.name) sections.push('project');
@@ -862,13 +863,10 @@ async function renderLibrary() {
           const data = await resp.json();
           for (const rec of (data.records || [])) {
             try {
-              // Decode CBOR bytes to JSON
               const bytes = new Uint8Array(rec.bytes || []);
-              const decoder = new TextDecoder();
-              const text = decoder.decode(bytes);
-              try { const body = JSON.parse(text); allPubs.push({ did: sessionDid, rkey: rec.rkey, cid: rec.cid, body }); }
-              catch { allPubs.push({ did: sessionDid, rkey: rec.rkey, cid: rec.cid, body: { title: 'Unknown', raw: text } }); }
-            } catch {}
+              const body = cbor.decode(bytes);
+              allPubs.push({ did: sessionDid, rkey: rec.rkey, cid: rec.cid, body });
+            } catch { allPubs.push({ did: sessionDid, rkey: rec.rkey, cid: rec.cid, body: { title: 'Unknown' } }); }
           }
         }
       } catch {}
