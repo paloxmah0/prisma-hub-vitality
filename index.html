@@ -411,7 +411,9 @@ function renderRegister() {
 async function checkHubExists() {
   if (!sessionDid) return false;
   try {
-    const r = await pdsPost('/xrpc/com.prisma.sync.getLatestCommit', { did: sessionDid });
+    const resp = await fetch(`${pdsUrl}/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(sessionDid)}`);
+    if (!resp.ok) return false;
+    const r = await resp.json();
     return r.rev > 0;
   } catch { return false; }
 }
@@ -521,10 +523,15 @@ async function submitRegistration() {
     console.log('submitRegistration: sessionDid=', sessionDid, 'name=', name, 'role=', stakeholderType);
 
     toast('Creating hub repo...');
-    const repoRes = await pdsPost('/xrpc/com.prisma.repo.initiateRepo', {
-      did: sessionDid, stakeholder_type: stakeholderType, name, wallet_address: walletAddress
-    });
-    console.log('initiateRepo res:', repoRes);
+    try {
+      await pdsPost('/xrpc/com.prisma.repo.initiateRepo', {
+        did: sessionDid, stakeholder_type: stakeholderType, name, wallet_address: walletAddress
+      });
+    } catch (e) {
+      if (e.message.includes('409') || e.message.includes('already exists')) {
+        toast('Hub repo already exists — continuing...');
+      } else { throw e; }
+    }
     toast('Recording enrollment...');
     const enrollRes = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
       collection: 'prisma.events.enrollment', rkey: 'self',
