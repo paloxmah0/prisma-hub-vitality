@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Prisma Hub Vitality</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/cbor-web@9.0.2/dist/cbor.min.js"></script>
 <style>
   body { background: #0a0e14; font-family: 'Inter', system-ui, sans-serif; }
   .glass { background: rgba(20, 28, 40, 0.6); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.06); }
@@ -18,15 +19,12 @@
   .step-active { color: #22c55e; border-bottom: 2px solid #22c55e; }
   .step { color: #64748b; border-bottom: 2px solid transparent; transition: all 0.2s; }
   .step:hover { color: #94a3b8; }
-  .step-done { color: #22c55e; }
-  .step-done::after { content: ' ✓'; }
   .fade-in { animation: fadeIn 0.3s; }
   @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
 </style>
 </head>
 <body class="text-slate-200 min-h-screen">
 
-<!-- Header -->
 <div class="glass sticky top-0 z-50 px-6 py-3 flex items-center gap-4 flex-wrap">
   <div class="flex items-center gap-2">
     <div class="w-3 h-3 rounded-full bg-green-500 pulse-dot"></div>
@@ -35,92 +33,38 @@
   <div class="flex-1"></div>
   <div class="flex items-center gap-2 text-sm">
     <label class="text-slate-500">AppView</label>
-    <input id="appview-url" class="rounded px-2 py-1 w-56 text-xs" placeholder="https://prisma-indexer.onrender.com">
+    <input id="appview-url" class="rounded px-2 py-1 w-52 text-xs" placeholder="https://prisma-indexer.onrender.com">
   </div>
   <div class="flex items-center gap-2 text-sm">
     <label class="text-slate-500">PDS</label>
-    <input id="pds-url" class="rounded px-2 py-1 w-56 text-xs" placeholder="http://localhost:3000">
+    <input id="pds-url" class="rounded px-2 py-1 w-52 text-xs" placeholder="http://localhost:3000">
   </div>
   <button id="save-config" class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs">Save</button>
   <button id="wallet-btn" class="px-3 py-1 rounded bg-green-600 hover:bg-green-500 text-xs font-medium">Connect Wallet</button>
   <span id="session-status" class="text-xs text-slate-500">Not signed in</span>
 </div>
 
-<!-- Stepper -->
 <nav id="stepper" class="px-6 pt-4 flex gap-6 text-sm font-medium">
-  <button class="step step-active pb-2" data-step="connect">1. Connect</button>
-  <button class="step pb-2" data-step="register">2. Register</button>
-  <button class="step pb-2" data-step="build">Publish</button>
+  <button class="step step-active pb-2" data-step="connect">Connect</button>
+  <button class="step pb-2" data-step="register">Register</button>
+  <button class="step pb-2" data-step="publish">Publish</button>
   <button class="step pb-2" data-step="library">Library</button>
 </nav>
 
-<!-- Content -->
 <main id="content" class="px-6 py-6"></main>
-
-<!-- Toast -->
 <div id="toast" class="fixed bottom-6 right-6 hidden glass px-4 py-3 rounded-lg text-sm glow"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/cbor-web@9.0.2/dist/cbor.min.js"></script>
 <script>
 // ─── Bech32 ───────────────────────────────────────────────────
 const BECH32_ALPHABET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 const BECH32_ALPHABET_MAP = {};
 for (let z = 0; z < BECH32_ALPHABET.length; z++) BECH32_ALPHABET_MAP[BECH32_ALPHABET.charAt(z)] = z;
-function bech32PolymodStep(pre) {
-  const b = pre >> 25;
-  return (((pre & 0x1ffffff) << 5) ^
-    (-((b >> 0) & 1) & 0x3b6a57b2) ^
-    (-((b >> 1) & 1) & 0x26508e6d) ^
-    (-((b >> 2) & 1) & 0x1ea119fa) ^
-    (-((b >> 3) & 1) & 0x3d4233dd) ^
-    (-((b >> 4) & 1) & 0x2a1462b3));
-}
-function bech32PrefixChk(prefix) {
-  let chk = 1;
-  for (let i = 0; i < prefix.length; ++i) {
-    const c = prefix.charCodeAt(i);
-    if (c < 33 || c > 126) return 'Invalid prefix (' + prefix + ')';
-    chk = bech32PolymodStep(chk) ^ (c >> 5);
-  }
-  chk = bech32PolymodStep(chk);
-  for (let i = 0; i < prefix.length; ++i) {
-    chk = bech32PolymodStep(chk) ^ (prefix.charCodeAt(i) & 0x1f);
-  }
-  return chk;
-}
-function bech32Convert(data, inBits, outBits, pad) {
-  let value = 0, bits = 0, maxV = (1 << outBits) - 1, result = [];
-  for (let i = 0; i < data.length; ++i) {
-    value = (value << inBits) | data[i]; bits += inBits;
-    while (bits >= outBits) { bits -= outBits; result.push((value >> bits) & maxV); }
-  }
-  if (pad) { if (bits > 0) result.push((value << (outBits - bits)) & maxV); }
-  else { if (bits >= inBits) return 'Excess padding'; if ((value << (outBits - bits)) & maxV) return 'Non-zero padding'; }
-  return result;
-}
-function bech32ToWords(bytes) { return bech32Convert(bytes, 8, 5, true); }
-function bech32Encode(prefix, words) {
-  let chk = bech32PrefixChk(prefix);
-  if (typeof chk === 'string') throw new Error(chk);
-  let result = prefix.toLowerCase() + '1';
-  for (let i = 0; i < words.length; ++i) {
-    const x = words[i];
-    if (x >> 5 !== 0) throw new Error('Non 5-bit word');
-    chk = bech32PolymodStep(chk) ^ x;
-    result += BECH32_ALPHABET.charAt(x);
-  }
-  for (let i = 0; i < 6; ++i) chk = bech32PolymodStep(chk);
-  chk ^= 1;
-  for (let i = 0; i < 6; ++i) result += BECH32_ALPHABET.charAt((chk >> ((5 - i) * 5)) & 0x1f);
-  return result;
-}
-function hexToStakeAddress(hex) {
-  const bytes = [];
-  for (let i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.substr(i, 2), 16));
-  const isMainnet = (bytes[0] & 0x0f) === 1;
-  const hrp = isMainnet ? 'stake' : 'stake_test';
-  return bech32Encode(hrp, bech32ToWords(bytes));
-}
+function bech32PolymodStep(pre){const b=pre>>25;return(((pre&0x1ffffff)<<5)^(-((b>>0)&1)&0x3b6a57b2)^(-((b>>1)&1)&0x26508e6d)^(-((b>>2)&1)&0x1ea119fa)^(-((b>>3)&1)&0x3d4233dd)^(-((b>>4)&1)&0x2a1462b3));}
+function bech32PrefixChk(prefix){let chk=1;for(let i=0;i<prefix.length;++i){const c=prefix.charCodeAt(i);if(c<33||c>126)return'Invalid prefix';chk=bech32PolymodStep(chk)^(c>>5);}chk=bech32PolymodStep(chk);for(let i=0;i<prefix.length;++i){chk=bech32PolymodStep(chk)^(prefix.charCodeAt(i)&0x1f);}return chk;}
+function bech32Convert(data,inBits,outBits,pad){let value=0,bits=0,maxV=(1<<outBits)-1,result=[];for(let i=0;i<data.length;++i){value=(value<<inBits)|data[i];bits+=inBits;while(bits>=outBits){bits-=outBits;result.push((value>>bits)&maxV);}}if(pad){if(bits>0)result.push((value<<(outBits-bits))&maxV);}else{if(bits>=inBits)return'Excess padding';if((value<<(outBits-bits))&maxV)return'Non-zero padding';}return result;}
+function bech32ToWords(bytes){return bech32Convert(bytes,8,5,true);}
+function bech32Encode(prefix,words){let chk=bech32PrefixChk(prefix);if(typeof chk==='string')throw new Error(chk);let result=prefix.toLowerCase()+'1';for(let i=0;i<words.length;++i){const x=words[i];if(x>>5!==0)throw new Error('Non 5-bit word');chk=bech32PolymodStep(chk)^x;result+=BECH32_ALPHABET.charAt(x);}for(let i=0;i<6;++i)chk=bech32PolymodStep(chk);chk^=1;for(let i=0;i<6;++i)result+=BECH32_ALPHABET.charAt((chk>>((5-i)*5))&0x1f);return result;}
+function hexToStakeAddress(hex){const bytes=[];for(let i=0;i<hex.length;i+=2)bytes.push(parseInt(hex.substr(i,2),16));const isMainnet=(bytes[0]&0x0f)===1;const hrp=isMainnet?'stake':'stake_test';return bech32Encode(hrp,bech32ToWords(bytes));}
 
 // ─── State ────────────────────────────────────────────────────
 let appviewUrl = localStorage.getItem('appview-url') || '';
@@ -141,37 +85,14 @@ document.getElementById('pds-url').value = pdsUrl;
 function val(id) { return document.getElementById(id)?.value?.trim() || ''; }
 function rkey() { return Math.random().toString(36).slice(2, 12); }
 function now() { return new Date().toISOString(); }
-
-function short(str, n = 12) {
-  if (!str) return '—';
-  if (str.length <= n) return str;
-  return str.slice(0, n) + '…';
-}
-
-function copyable(str, label = 'Copy') {
-  if (!str) return '<span class="text-slate-600">—</span>';
-  const id = 'copy-' + Math.random().toString(36).slice(2, 8);
-  return `<span class="font-mono text-slate-500 cursor-pointer hover:text-green-400" id="${id}" title="${label}: ${str}" onclick="navigator.clipboard.writeText('${str}'); this.style.color='#22c55e'; setTimeout(() => this.style.color='', 1000)">${short(str)}</span>`;
-}
-
-function toast(msg, isError = false) {
-  const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.classList.toggle('text-red-400', isError);
-  el.classList.toggle('text-slate-200', !isError);
-  el.classList.remove('hidden');
-  setTimeout(() => el.classList.add('hidden'), 4000);
-}
-
-function emptyState(title, sub) {
-  return `<div class="text-center py-16"><div class="text-slate-400 text-lg mb-2">${title}</div><div class="text-slate-600 text-sm">${sub}</div></div>`;
-}
-
-function errorBox(err) {
-  return `<div class="text-red-400 text-sm">${err.message}</div><div class="text-slate-500 text-xs mt-2">Make sure the AppView URL is set and the service is running.</div>`;
-}
+function short(str, n = 12) { if (!str) return '—'; return str.length <= n ? str : str.slice(0, n) + '…'; }
+function copyable(str) { if (!str) return '<span class="text-slate-600">—</span>'; return `<span class="font-mono text-slate-500 cursor-pointer hover:text-green-400" title="${str}" onclick="navigator.clipboard.writeText('${str}');this.style.color='#22c55e';setTimeout(()=>this.style.color='',1000)">${short(str)}</span>`; }
+function toast(msg, isError) { const el = document.getElementById('toast'); el.textContent = msg; el.classList.toggle('text-red-400', !!isError); el.classList.toggle('text-slate-200', !isError); el.classList.remove('hidden'); setTimeout(() => el.classList.add('hidden'), 4000); }
+function emptyState(title, sub) { return `<div class="text-center py-16"><div class="text-slate-400 text-lg mb-2">${title}</div><div class="text-slate-600 text-sm">${sub}</div></div>`; }
+function errorBox(err) { return `<div class="text-red-400 text-sm">${err.message}</div>`; }
 
 // ─── API ──────────────────────────────────────────────────────
+// AppView: pure JSON GET, CORS *, no auth needed for public data
 async function appviewGet(path) {
   if (!appviewUrl) throw new Error('Set the AppView URL first');
   const resp = await fetch(`${appviewUrl}${path}`);
@@ -179,6 +100,7 @@ async function appviewGet(path) {
   return resp.json();
 }
 
+// PDS JSON POST: sends JSON, returns JSON
 async function pdsPost(path, body) {
   if (!pdsUrl) throw new Error('Set the PDS URL first');
   const headers = { 'Content-Type': 'application/json' };
@@ -186,103 +108,84 @@ async function pdsPost(path, body) {
   let resp;
   try {
     resp = await fetch(`${pdsUrl}${path}`, { method: 'POST', headers, body: JSON.stringify(body) });
-  } catch (e) {
-    throw new Error(`Cannot reach PDS at ${pdsUrl} — is it running? (${e.message})`);
-  }
+  } catch (e) { throw new Error(`Cannot reach PDS at ${pdsUrl} (${e.message})`); }
   const text = await resp.text();
   if (!resp.ok) throw new Error(`PDS ${resp.status}: ${text}`);
   return text ? JSON.parse(text) : {};
+}
+
+// PDS raw bytes upload: application/octet-stream, NOT JSON
+async function pdsUploadBlob(did, arrayBuffer) {
+  if (!pdsUrl) throw new Error('Set the PDS URL first');
+  const headers = { 'Content-Type': 'application/octet-stream' };
+  if (sessionToken) headers['Authorization'] = 'Bearer ' + sessionToken;
+  let resp;
+  try {
+    resp = await fetch(`${pdsUrl}/xrpc/com.prisma.repo.uploadBlob?did=${encodeURIComponent(did)}`, {
+      method: 'POST', headers, body: arrayBuffer
+    });
+  } catch (e) { throw new Error(`Cannot reach PDS for upload (${e.message})`); }
+  const text = await resp.text();
+  if (!resp.ok) throw new Error(`PDS ${resp.status}: ${text}`);
+  return JSON.parse(text);
+}
+
+// PDS GET (no auth): getLatestCommit, listRecords, getBlob
+async function pdsGet(path) {
+  if (!pdsUrl) throw new Error('Set the PDS URL first');
+  const resp = await fetch(`${pdsUrl}${path}`);
+  if (!resp.ok) throw new Error(`PDS ${resp.status}: ${await resp.text()}`);
+  return resp.json();
 }
 
 // ─── Wallet ───────────────────────────────────────────────────
 document.getElementById('wallet-btn').addEventListener('click', walletSignIn);
 
 async function walletSignIn() {
-  console.log('walletSignIn called, pdsUrl=', pdsUrl);
   if (!pdsUrl) { toast('Set the PDS URL first', true); return; }
   try {
-    console.log('window.cardano keys:', Object.keys(window.cardano || {}));
     const wallets = Object.keys(window.cardano || {}).filter(k => window.cardano[k].enable);
-    console.log('available wallets:', wallets);
-    if (wallets.length === 0) { toast('No Cardano wallet found. Install Eternl, Nami, or Lace.', true); return; }
+    if (wallets.length === 0) { toast('No Cardano wallet found', true); return; }
 
     // Try each wallet until one works
-    let enabled = null;
-    let walletName = null;
+    let enabled = null, walletName = null;
     for (const w of wallets) {
-      console.log('trying wallet:', w);
-      try {
-        enabled = await window.cardano[w].enable();
-        walletName = w;
-        walletApi = enabled;
-        console.log('wallet enabled:', w);
-        break;
-      } catch (e) {
-        console.log('wallet', w, 'failed:', e.message);
-        toast(`${w} failed: ${e.message}, trying next...`);
-      }
+      try { enabled = await window.cardano[w].enable(); walletName = w; walletApi = enabled; break; }
+      catch (e) { console.log(w, 'failed:', e.message); }
     }
-    if (!enabled || !walletName) { throw new Error('No wallet could be enabled. Make sure a Cardano wallet is installed and unlocked.'); }
+    if (!enabled) throw new Error('No wallet could be enabled. Is it unlocked?');
     toast(`Connected to ${walletName}`);
 
     let rewardAddresses;
-    try {
-      rewardAddresses = await walletApi.getRewardAddresses();
-    } catch (gaErr) {
-      console.error('getRewardAddresses error:', gaErr);
-      throw new Error('Could not get reward addresses: ' + gaErr.message);
-    }
-    console.log('rewardAddresses:', rewardAddresses);
-    if (!rewardAddresses || rewardAddresses.length === 0) { toast('No reward address', true); return; }
+    try { rewardAddresses = await walletApi.getRewardAddresses(); } catch (e) { throw new Error('getRewardAddresses failed: ' + e.message); }
+    if (!rewardAddresses || rewardAddresses.length === 0) throw new Error('No reward address');
     rewardAddress = rewardAddresses[0];
-    console.log('rewardAddress raw:', rewardAddress, 'type:', typeof rewardAddress);
-    
-    // getRewardAddresses returns hex-encoded bytes (e.g. "e045694e...")
-    // The DID uses the bech32 stake address, but signData wants the hex address
     const stakeAddress = typeof rewardAddress === 'string' && rewardAddress.startsWith('stake')
-      ? rewardAddress
-      : hexToStakeAddress(rewardAddress);
+      ? rewardAddress : hexToStakeAddress(rewardAddress);
     const did = `did:cardano:${stakeAddress}`;
-    console.log('DID:', did);
 
     toast('Requesting challenge...');
     const challenge = await pdsPost('/xrpc/com.prisma.auth.getChallenge', { did });
-    console.log('Challenge:', challenge);
-    
-    // CIP-30 signData takes (address, hexPayload)
-    // address = the hex-encoded address bytes (what getRewardAddresses returned)
-    // hexPayload = hex-encoded bytes of the challenge message
     const challengeBytes = new TextEncoder().encode(challenge.challenge);
     const hexPayload = Array.from(challengeBytes).map(b => b.toString(16).padStart(2, '0')).join('');
-    console.log('hexPayload:', hexPayload);
-    
+
     toast('Waiting for wallet signature...');
     let sigResult;
-    try {
-      sigResult = await walletApi.signData(rewardAddress, hexPayload);
-      console.log('signData result:', sigResult);
-    } catch (signErr) {
-      console.error('signData error:', signErr);
-      throw new Error('Wallet rejected the signature request: ' + signErr.message);
-    }
-    if (!sigResult || !sigResult.signature || !sigResult.key) { throw new Error('Wallet did not return a valid signature'); }
-    const { signature, key } = sigResult;
-    toast('Signing in...');
-    const session = await pdsPost('/xrpc/com.prisma.auth.login', { nonce: challenge.nonce, signature, key });
+    try { sigResult = await walletApi.signData(rewardAddress, hexPayload); }
+    catch (e) { throw new Error('Wallet rejected signature: ' + e.message); }
+    if (!sigResult || !sigResult.signature || !sigResult.key) throw new Error('Wallet did not return a valid signature');
 
+    toast('Signing in...');
+    const session = await pdsPost('/xrpc/com.prisma.auth.login', { nonce: challenge.nonce, signature: sigResult.signature, key: sigResult.key });
     sessionToken = session.token;
     sessionDid = session.did;
     const btn = document.getElementById('wallet-btn');
-    btn.textContent = 'Signed In';
-    btn.classList.remove('bg-green-600', 'hover:bg-green-500');
-    btn.classList.add('bg-green-800');
+    btn.textContent = 'Signed In'; btn.className = 'px-3 py-1 rounded bg-green-800 text-xs font-medium';
     const st = document.getElementById('session-status');
-    st.textContent = short(sessionDid, 20);
-    st.className = 'text-xs text-green-400';
+    st.textContent = short(sessionDid, 20); st.className = 'text-xs text-green-400';
     toast('Signed in!');
-    updateStepper();
-    loadStep();
-  } catch (err) { console.error('walletSignIn FULL ERROR:', err); toast('Sign-in failed: ' + err.message, true); }
+    updateStepper(); loadStep();
+  } catch (err) { console.error('walletSignIn error:', err); toast('Sign-in failed: ' + err.message, true); }
 }
 
 // ─── Stepper ──────────────────────────────────────────────────
@@ -291,27 +194,21 @@ document.getElementById('save-config').addEventListener('click', () => {
   pdsUrl = document.getElementById('pds-url').value.replace(/\/$/, '');
   localStorage.setItem('appview-url', appviewUrl);
   localStorage.setItem('pds-url', pdsUrl);
-  toast('Config saved');
-  loadStep();
+  toast('Config saved'); loadStep();
 });
 
 document.querySelectorAll('.step').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.step').forEach(t => t.classList.remove('step-active'));
-    btn.classList.add('step-active');
-    currentStep = btn.dataset.step;
-    loadStep();
+    btn.classList.add('step-active'); currentStep = btn.dataset.step; loadStep();
   });
 });
 
 function updateStepper() {
-  const steps = ['connect', 'register', 'build', 'vitality'];
-  steps.forEach((s, i) => {
+  ['connect','register','publish','library'].forEach((s) => {
     const btn = document.querySelector(`[data-step="${s}"]`);
     if (!btn) return;
     btn.classList.remove('step-active');
-    if (sessionToken && i >= 1) btn.classList.add('step-done');
-    if (hubCreated && i >= 2) btn.classList.add('step-done');
     if (s === currentStep) btn.classList.add('step-active');
   });
 }
@@ -323,7 +220,7 @@ function loadStep() {
   switch (currentStep) {
     case 'connect': renderConnect(); break;
     case 'register': renderRegister(); break;
-    case 'build': renderPublish(); break;
+    case 'publish': renderPublish(); break;
     case 'library': renderLibrary(); break;
   }
 }
@@ -336,40 +233,19 @@ function renderConnect() {
     <div class="max-w-2xl mx-auto fade-in">
       <div class="glass rounded-xl p-8 mb-6">
         <h2 class="text-xl font-bold text-green-300 mb-2">Welcome to Prisma Hub Vitality</h2>
-        <p class="text-slate-400 text-sm mb-6">Your data stays on your disk. Signed, content-addressed, yours. This is a 4-step flow: connect your wallet, register your hub, build your records, and see your vitality.</p>
-        <div class="space-y-4">
-          <div class="flex items-center gap-3 ${signedIn ? 'text-green-400' : 'text-slate-500'}">
-            <span class="text-lg">${signedIn ? '✅' : '⬜'}</span>
-            <span class="text-sm">1. Set your PDS and AppView URLs (top bar)</span>
-          </div>
-          <div class="flex items-center gap-3 ${signedIn ? 'text-green-400' : 'text-slate-500'}">
-            <span class="text-lg">${signedIn ? '✅' : '⬜'}</span>
-            <span class="text-sm">2. Connect your Cardano wallet (top-right button)</span>
-          </div>
-          <div class="flex items-center gap-3 text-slate-500">
-            <span class="text-lg">⬜</span>
-            <span class="text-sm">3. Register your hub and choose a role</span>
-          </div>
-          <div class="flex items-center gap-3 text-slate-500">
-            <span class="text-lg">⬜</span>
-            <span class="text-sm">4. Build records (projects, interviews, milestones, budgets)</span>
-          </div>
-          <div class="flex items-center gap-3 text-slate-500">
-            <span class="text-lg">⬜</span>
-            <span class="text-sm">5. View your hub vitality on the dashboard</span>
-          </div>
+        <p class="text-slate-400 text-sm mb-6">Your data stays on your disk. Signed, content-addressed, yours.</p>
+        <div class="space-y-3">
+          <div class="flex items-center gap-3 ${signedIn ? 'text-green-400' : 'text-slate-500'}"><span>${signedIn ? '✅' : '⬜'}</span><span class="text-sm">Set PDS and AppView URLs (top bar)</span></div>
+          <div class="flex items-center gap-3 ${signedIn ? 'text-green-400' : 'text-slate-500'}"><span>${signedIn ? '✅' : '⬜'}</span><span class="text-sm">Connect your Cardano wallet</span></div>
+          <div class="flex items-center gap-3 text-slate-500"><span>⬜</span><span class="text-sm">Register your hub</span></div>
+          <div class="flex items-center gap-3 text-slate-500"><span>⬜</span><span class="text-sm">Publish research (projects, interviews, milestones, budgets, team, playbook, video)</span></div>
+          <div class="flex items-center gap-3 text-slate-500"><span>⬜</span><span class="text-sm">Read the Library — all hubs' published research</span></div>
         </div>
       </div>
       ${signedIn ? `
         <div class="glass rounded-xl p-6 glow">
-          <div class="flex items-center gap-3 mb-4">
-            <span class="text-2xl">✅</span>
-            <div>
-              <h3 class="font-semibold text-green-300">Wallet connected</h3>
-              <div class="text-xs text-slate-500 mt-1">${copyable(sessionDid, 'Copy DID')}</div>
-            </div>
-          </div>
-          <button onclick="document.querySelector('[data-step=\\'register\\']').click()" class="w-full px-4 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Continue to Registration →</button>
+          <div class="flex items-center gap-3 mb-4"><span class="text-2xl">✅</span><div><h3 class="font-semibold text-green-300">Wallet connected</h3><div class="text-xs text-slate-500 mt-1">${copyable(sessionDid)}</div></div></div>
+          <button onclick="document.querySelector('[data-step=\\'register\\']').click()" class="w-full px-4 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Continue →</button>
         </div>
       ` : `
         <div class="glass rounded-xl p-6 text-center">
@@ -377,44 +253,32 @@ function renderConnect() {
           <button onclick="walletSignIn()" class="px-6 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Connect Wallet</button>
         </div>
       `}
-    </div>
-  `;
+    </div>`;
 }
 
 // ─── Step 2: Register ─────────────────────────────────────────
 const STAKEHOLDER_TYPES = [
-  { name: 'Participant', id: 'ODpx0p', description: 'Individuals', icon: '👤' },
-  { name: 'Community of Place', id: '5BkzBo', description: 'Bioregional hubs & locals', icon: '🌍' },
-  { name: 'Community of Practice', id: 'n9J7rK', description: 'Network representatives', icon: '🔗' },
-  { name: 'Partner', id: 'wQB7El', description: 'Technologies, funders, institutions', icon: '🤝' },
+  { name: 'Participant', id: 'ODpx0p', icon: '👤' },
+  { name: 'Community of Place', id: '5BkzBo', icon: '🌍' },
+  { name: 'Community of Practice', id: 'n9J7rK', icon: '🔗' },
+  { name: 'Partner', id: 'wQB7El', icon: '🤝' },
 ];
 
 function renderRegister() {
   const c = document.getElementById('content');
-  if (!sessionToken) {
-    c.innerHTML = emptyState('Not signed in', 'Connect your wallet first (step 1).');
-    return;
-  }
-
-  // Check if hub already exists
-  c.innerHTML = '<div class="text-slate-500 text-sm">Checking your hub...</div>';
+  if (!sessionToken) { c.innerHTML = emptyState('Not signed in', 'Connect your wallet first.'); return; }
+  c.innerHTML = '<div class="text-slate-500 text-sm">Checking...</div>';
   checkHubExists().then(exists => {
     hubCreated = exists;
-    updateStepper();
-    if (exists) {
-      renderHubOverview();
-    } else {
-      renderRegistrationForm();
-    }
-  }).catch(() => renderRegistrationForm());
+    if (exists) renderHubOverview();
+    else renderRoleSelection();
+  }).catch(() => renderRoleSelection());
 }
 
 async function checkHubExists() {
   if (!sessionDid) return false;
   try {
-    const resp = await fetch(`${pdsUrl}/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(sessionDid)}`);
-    if (!resp.ok) return false;
-    const r = await resp.json();
+    const r = await pdsGet(`/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(sessionDid)}`);
     return r.rev > 0;
   } catch { return false; }
 }
@@ -422,302 +286,181 @@ async function checkHubExists() {
 async function renderHubOverview() {
   const c = document.getElementById('content');
   let hubInfo = null;
-  try {
-    const hubsRes = await appviewGet('/api/research/hubs');
-    hubInfo = (hubsRes.hubs || []).find(h => h.did === sessionDid);
-  } catch {}
-
+  try { const hubsRes = await appviewGet('/api/research/hubs'); hubInfo = (hubsRes.hubs || []).find(h => h.did === sessionDid); } catch {}
   c.innerHTML = `
     <div class="max-w-2xl mx-auto fade-in">
       <div class="glass rounded-xl p-6 mb-6 glow">
-        <div class="flex items-center gap-3 mb-4">
-          <span class="text-2xl">✅</span>
-          <div>
-            <h3 class="font-semibold text-green-300">Hub registered</h3>
-            <div class="text-xs text-slate-500 mt-1">Your hub is live on your PDS</div>
-          </div>
-        </div>
-        ${hubInfo ? `
-          <div class="space-y-2 text-sm text-slate-300">
-            <div><span class="text-slate-600">Name:</span> ${hubInfo.name}</div>
-            <div><span class="text-slate-600">Role:</span> ${hubInfo.stakeholder_type}</div>
-            <div><span class="text-slate-600">DID:</span> ${copyable(hubInfo.did, 'Copy DID')}</div>
-            <div><span class="text-slate-600">Wallet:</span> ${copyable(hubInfo.wallet_address, 'Copy wallet')}</div>
-            <div><span class="text-slate-600">Enrolled:</span> ${hubInfo.enrolled_at || '—'}</div>
-          </div>
-        ` : '<div class="text-xs text-slate-500">Hub exists on PDS, waiting for indexer...</div>'}
+        <div class="flex items-center gap-3 mb-4"><span class="text-2xl">✅</span><div><h3 class="font-semibold text-green-300">Hub registered</h3></div></div>
+        ${hubInfo ? `<div class="space-y-2 text-sm text-slate-300">
+          <div><span class="text-slate-600">Name:</span> ${hubInfo.name}</div>
+          <div><span class="text-slate-600">Role:</span> ${hubInfo.stakeholder_type}</div>
+          <div><span class="text-slate-600">DID:</span> ${copyable(hubInfo.did)}</div>
+          <div><span class="text-slate-600">Wallet:</span> ${copyable(hubInfo.wallet_address)}</div>
+        </div>` : '<div class="text-xs text-slate-500">Hub exists on PDS, waiting for indexer...</div>'}
       </div>
-      <button onclick="document.querySelector('[data-step=\\'build\\']').click()" class="w-full px-4 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Continue to Build →</button>
-    </div>
-  `;
+      <button onclick="document.querySelector('[data-step=\\'publish\\']').click()" class="w-full px-4 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Publish Research →</button>
+    </div>`;
   hubCreated = true;
-  updateStepper();
 }
 
-function renderRegistrationForm() {
+function renderRoleSelection() {
   const c = document.getElementById('content');
-  if (selectedRole) {
-    renderRegistrationDetails();
-  } else {
-    c.innerHTML = `
-      <div class="max-w-3xl mx-auto fade-in">
-        <div class="text-center mb-6">
-          <h2 class="text-xl font-bold text-green-300 mb-2">Choose your role</h2>
-          <p class="text-slate-400 text-sm">This creates your hub on your PDS. Your first commit is your enrollment.</p>
-        </div>
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          ${STAKEHOLDER_TYPES.map(t => `
-            <div class="glass rounded-xl p-6 cursor-pointer hover:border-green-500/30 transition text-center" onclick="selectRole('${t.id}','${t.name}')">
-              <div class="text-4xl mb-3">${t.icon}</div>
-              <h3 class="font-semibold text-green-300 mb-1">${t.name}</h3>
-              <p class="text-xs text-slate-500">${t.description}</p>
-            </div>
-          `).join('')}
-        </div>
+  if (selectedRole) { renderRegDetails(); return; }
+  c.innerHTML = `
+    <div class="max-w-3xl mx-auto fade-in">
+      <div class="text-center mb-6"><h2 class="text-xl font-bold text-green-300">Choose your role</h2></div>
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+        ${STAKEHOLDER_TYPES.map(t => `<div class="glass rounded-xl p-6 cursor-pointer hover:border-green-500/30 transition text-center" onclick="selectRole('${t.id}','${t.name}')"><div class="text-4xl mb-3">${t.icon}</div><h3 class="font-semibold text-green-300">${t.name}</h3></div>`).join('')}
       </div>
-    `;
-  }
+    </div>`;
 }
 
-function selectRole(id, name) {
-  selectedRole = id;
-  selectedRoleName = name;
-  renderRegistrationDetails();
-}
+function selectRole(id, name) { selectedRole = id; selectedRoleName = name; renderRegDetails(); }
 
-function renderRegistrationDetails() {
+function renderRegDetails() {
   const c = document.getElementById('content');
   c.innerHTML = `
     <div class="max-w-2xl mx-auto fade-in">
       <div class="glass rounded-xl p-6 mb-6">
-        <div class="text-xs text-slate-500 mb-1">Selected role</div>
         <div class="text-lg font-semibold text-green-300 mb-4">${selectedRoleName}</div>
         <div class="space-y-4">
-          <div><label class="text-xs text-slate-500">Name</label>
-            <input id="reg-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Your name or hub name"></div>
-          <div><label class="text-xs text-slate-500">Wallet Address</label>
-            <input id="reg-wallet" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="addr1... or addr_test1..."></div>
-          <div><label class="text-xs text-slate-500">Region / Location</label>
-            <input id="reg-region" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Nairobi, Kenya"></div>
+          <div><label class="text-xs text-slate-500">Name</label><input id="reg-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Your name or hub name"></div>
+          <div><label class="text-xs text-slate-500">Wallet Address</label><input id="reg-wallet" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="addr1..."></div>
+          <div><label class="text-xs text-slate-500">Region</label><input id="reg-region" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Nairobi, Kenya"></div>
         </div>
       </div>
       <div class="flex gap-3">
-        <button onclick="selectedRole=null; selectedRoleName=null; renderRegistrationForm()" class="px-4 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">← Back</button>
+        <button onclick="selectedRole=null;selectedRoleName=null;renderRoleSelection()" class="px-4 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">← Back</button>
         <button id="reg-submit" onclick="submitRegistration()" class="flex-1 px-4 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Register & Create Hub →</button>
       </div>
-    </div>
-  `;
+    </div>`;
 }
 
 async function submitRegistration() {
   const btn = document.getElementById('reg-submit');
-  if (!btn) { toast('Button not found', true); return; }
   if (btn) { btn.disabled = true; btn.textContent = 'Creating...'; }
   try {
-    if (!sessionDid) { toast('Not signed in — connect your wallet first', true); return; }
-    const name = val('reg-name');
-    if (!name) { toast('Name required', true); if (btn) { btn.disabled = false; btn.textContent = 'Register & Create Hub →'; } return; }
+    if (!sessionDid) { toast('Not signed in', true); return; }
+    const name = val('reg-name'); if (!name) { toast('Name required', true); return; }
     const stakeholderType = selectedRole || 'ODpx0p';
     const walletAddress = val('reg-wallet') || 'unknown';
     const region = val('reg-region');
 
-    console.log('submitRegistration: sessionDid=', sessionDid, 'name=', name, 'role=', stakeholderType);
-
+    // 1. initiateRepo (creates repo + internal enrollment at rkey="self")
     toast('Creating hub repo...');
-    try {
-      await pdsPost('/xrpc/com.prisma.repo.initiateRepo', {
-        did: sessionDid, stakeholder_type: stakeholderType, name, wallet_address: walletAddress
-      });
-    } catch (e) {
-      if (e.message.includes('409') || e.message.includes('already exists')) {
-        toast('Hub repo already exists — continuing...');
-      } else { throw e; }
-    }
+    try { await pdsPost('/xrpc/com.prisma.repo.initiateRepo', { did: sessionDid, stakeholder_type: stakeholderType, name, wallet_address: walletAddress }); }
+    catch (e) { if (e.message.includes('409')) toast('Hub already exists, continuing...'); else throw e; }
+
+    // 2. createRecord enrollment (emits RecordCreated so indexer projects it)
     toast('Recording enrollment...');
-    const enrollRes = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+    await pdsPost('/xrpc/com.prisma.repo.createRecord', {
       collection: 'prisma.events.enrollment', rkey: 'self',
-      stakeholder_type: stakeholderType, submission_id: 'signup', respondent_id: 'signup',
-      name, wallet_address: walletAddress, did: sessionDid, enrolled_at: now()
+      stakeholder_type: stakeholderType, name, wallet_address: walletAddress,
+      did: sessionDid, enrolled_at: now()
     });
-    console.log('enrollment res:', enrollRes);
+
+    // 3. createRecord project if region
     if (region) {
       toast('Creating project...');
-      const projRes = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+      await pdsPost('/xrpc/com.prisma.repo.createRecord', {
         collection: 'prisma.events.project', rkey: rkey(),
         name, impactArea: region, createdAt: now()
       });
-      console.log('project res:', projRes);
     }
+
     hubCreated = true;
     toast('Hub registered!');
-    setTimeout(() => { document.querySelector('[data-step="build"]').click(); }, 1000);
-  } catch (e) { console.error('submitRegistration error:', e); toast(e.message, true); if (btn) { btn.disabled = false; btn.textContent = 'Register & Create Hub →'; } }
+    setTimeout(() => { document.querySelector('[data-step="publish"]').click(); }, 1500);
+  } catch (e) { toast(e.message, true); if (btn) { btn.disabled = false; btn.textContent = 'Register & Create Hub →'; } }
 }
 
-// ─── Step 3: Publish (one big form, publish once) ────────────
+// ─── Step 3: Publish ───────────────────────────────────────────
+// Uses the existing collections with EXACT field names the indexer expects.
+// All records in one publish share a batch prefix so they're linked.
 function renderPublish() {
   const c = document.getElementById('content');
   if (!sessionToken) { c.innerHTML = emptyState('Not signed in', 'Connect your wallet first.'); return; }
+  c.innerHTML = '<div class="text-slate-500 text-sm">Loading...</div>';
 
-  // Show existing records from the PDS (not the AppView — that may lag)
-  c.innerHTML = '<div class="text-slate-500 text-sm">Loading your records...</div>';
-
-  // Fetch from PDS directly (always up-to-date, no relay lag)
-  const collections = [
-    { name: 'prisma.events.project', label: 'Projects' },
-    { name: 'prisma.events.interview', label: 'Interviews' },
-    { name: 'prisma.events.milestoneProgress', label: 'Milestones' },
-    { name: 'prisma.events.budgetAllocation', label: 'Budgets' },
-    { name: 'prisma.events.localTeam', label: 'Team' },
-    { name: 'prisma.events.playbookSection', label: 'Playbook' },
-  ];
-
-  // Fetch commit history + publications from PDS
+  // Get commit history from PDS
   Promise.all([
-    fetch(`${pdsUrl}/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(sessionDid)}`).then(r => r.ok ? r.json() : null).catch(() => null),
-    fetch(`${pdsUrl}/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.hubPublication`).then(r => r.ok ? r.json() : { records: [] }).catch(() => ({ records: [] })),
-    fetch(`${pdsUrl}/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.enrollment`).then(r => r.ok ? r.json() : { records: [] }).catch(() => ({ records: [] })),
-  ]).then(([latestCommit, pubsData, enrollData]) => {
-    // Only keep the "main" publication (one per hub, like GitHub)
-    const allPubs = pubsData.records || [];
-    const pubs = allPubs.filter(p => p.rkey === 'main');
-    const enrollments = enrollData.records || [];
+    pdsGet(`/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(sessionDid)}`).catch(() => null),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.enrollment`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.project`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.interview`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.milestoneProgress`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.budgetAllocation`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.localTeam`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.playbookSection`).catch(() => ({ records: [] })),
+  ]).then(([latestCommit, enroll, proj, iv, ms, bg, lt, pb]) => {
     const totalRev = latestCommit ? latestCommit.rev : 0;
-
-    // Build commit history
-    let commitHistory = '';
-
-    // First commit = enrollment (the "initial commit")
-    if (enrollments.length > 0) {
-      const enroll = enrollments[0];
-      let enrollBody = {};
-      try { enrollBody = cbor.decode(new Uint8Array(enroll.bytes || [])); } catch { enrollBody = {}; }
-      commitHistory += `
-        <div class="flex items-start gap-3 mb-3">
-          <div class="flex flex-col items-center">
-            <div class="w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-xs font-bold">1</div>
-            <div class="w-0.5 h-full bg-slate-700"></div>
-          </div>
-          <div class="flex-1 pb-3">
-            <div class="glass rounded-lg p-4">
-              <div class="flex items-center justify-between">
-                <span class="text-sm font-medium text-green-300">Initial commit — Hub enrolled</span>
-                <span class="text-xs text-slate-600">rev 1</span>
-              </div>
-              <div class="text-xs text-slate-500 mt-1">Name: ${enrollBody.name || '—'} · Role: ${enrollBody.stakeholder_type || '—'} · Wallet: ${enrollBody.wallet_address || '—'}</div>
-              <div class="text-xs text-slate-600 mt-1">${copyable(enroll.cid)}</div>
-            </div>
-          </div>
-        </div>`;
-    }
-
-    // Publication — single record that gets updated (rkey="main")
-    let existingPub = null;
-    if (pubs.length > 0) {
-      const pub = pubs[0];
-      try { existingPub = cbor.decode(new Uint8Array(pub.bytes || [])); } catch { existingPub = null; }
-      const pubBody = existingPub || {};
-      const rev = totalRev || pubs.length + 1;
-      const sections = [];
-      if (pubBody.project && pubBody.project.name) sections.push('project');
-      if (pubBody.interview) sections.push('interview');
-      if (pubBody.milestone) sections.push('milestone');
-      if (pubBody.budget) sections.push('budget');
-      if (pubBody.team) sections.push('team');
-      if (pubBody.playbook) sections.push('playbook');
-      if (pubBody.video) sections.push('video');
-      const isUpdate = rev > 2;
-      const commitMsg = isUpdate ? `Update — ${pubBody.title || 'publication'}` : `Initial publication — ${pubBody.title || 'Untitled'}`;
-      const changes = sections.length > 0 ? `${sections.length} sections: ${sections.join(', ')}` : 'publication';
-
-      commitHistory += `
-        <div class="flex items-start gap-3 mb-3">
-          <div class="flex flex-col items-center">
-            <div class="w-8 h-8 rounded-full ${isUpdate ? 'bg-slate-700' : 'bg-green-600'} flex items-center justify-center text-xs font-bold">${rev}</div>
-          </div>
-          <div class="flex-1 pb-3">
-            <div class="glass rounded-lg p-4">
-              <div class="flex items-center justify-between">
-                <span class="text-sm font-medium text-green-300">${commitMsg}</span>
-                <span class="text-xs text-slate-600">rev ${rev}</span>
-              </div>
-              <div class="text-xs text-slate-500 mt-1 font-mono">${changes}</div>
-              <div class="text-xs text-slate-600 mt-1">${copyable(pub.cid)}</div>
-            </div>
-          </div>
-        </div>`;
-    }
-
-    if (enrollments.length === 0 && pubs.length === 0) {
-      commitHistory = `<div class="text-center text-slate-500 text-sm py-4">No commits yet. Publish your first record below.</div>`;
-    }
+    const counts = {
+      enrollment: (enroll.records || []).length,
+      project: (proj.records || []).length,
+      interview: (iv.records || []).length,
+      milestone: (ms.records || []).length,
+      budget: (bg.records || []).length,
+      team: (lt.records || []).length,
+      playbook: (pb.records || []).length,
+    };
+    const totalRecords = Object.values(counts).reduce((a, b) => a + b, 0);
 
     c.innerHTML = `
       <div class="max-w-3xl mx-auto fade-in">
         <div class="text-center mb-6">
           <h2 class="text-xl font-bold text-green-300">Publish Your Research</h2>
-          <p class="text-slate-400 text-sm mt-1">Fill in any section, then click Publish. Each publish is a new commit on your hub repo.</p>
+          <p class="text-slate-400 text-sm mt-1">Fill in any section, then click Publish. Each section writes a separate signed record to your PDS.</p>
         </div>
 
-        <!-- Commit History (like GitHub) -->
+        <!-- Commit History -->
         <div class="glass rounded-xl p-6 mb-6">
           <div class="flex items-center justify-between mb-4">
             <h3 class="font-semibold text-green-300">Commit History</h3>
-            <span class="text-xs text-slate-500">${totalRev} commit${totalRev === 1 ? '' : 's'}</span>
+            <span class="text-xs text-slate-500">${totalRev} commits · ${totalRecords} records</span>
           </div>
-          ${commitHistory}
+          <div class="grid grid-cols-4 md:grid-cols-7 gap-2 mb-3">
+            <div class="text-center"><div class="text-lg font-bold text-green-400">${counts.enrollment}</div><div class="text-xs text-slate-500">Enroll</div></div>
+            <div class="text-center"><div class="text-lg font-bold text-green-400">${counts.project}</div><div class="text-xs text-slate-500">Projects</div></div>
+            <div class="text-center"><div class="text-lg font-bold text-green-400">${counts.interview}</div><div class="text-xs text-slate-500">Interviews</div></div>
+            <div class="text-center"><div class="text-lg font-bold text-green-400">${counts.milestone}</div><div class="text-xs text-slate-500">Milestones</div></div>
+            <div class="text-center"><div class="text-lg font-bold text-green-400">${counts.budget}</div><div class="text-xs text-slate-500">Budgets</div></div>
+            <div class="text-center"><div class="text-lg font-bold text-green-400">${counts.team}</div><div class="text-xs text-slate-500">Team</div></div>
+            <div class="text-center"><div class="text-lg font-bold text-green-400">${counts.playbook}</div><div class="text-xs text-slate-500">Playbook</div></div>
+          </div>
         </div>
 
-        <!-- Publish form -->
+        <!-- Form: exact field names matching the indexer's handle.rs -->
         <div class="glass rounded-xl p-6 mb-4">
-          <h3 class="font-semibold text-green-300 mb-4">${pubs.length > 0 ? 'Update Publication' : 'New Publication'}</h3>
-          <div class="mb-4"><label class="text-xs text-slate-500">Publication Title</label>
-            <input id="pub-project-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Q3 Research Update"></div>
-
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-            <div><label class="text-xs text-slate-500">Impact Area</label>
-              <input id="pub-project-impact" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Nairobi, Kenya"></div>
+          <h3 class="font-semibold text-green-300 mb-4">📋 Project</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div><label class="text-xs text-slate-500">Name</label><input id="p-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Project name"></div>
+            <div><label class="text-xs text-slate-500">Impact Area</label><input id="p-impact" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Nairobi, Kenya"></div>
           </div>
         </div>
 
         <div class="glass rounded-xl p-6 mb-4">
           <h3 class="font-semibold text-green-300 mb-4">🎤 Interview</h3>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div><label class="text-xs text-slate-500">Title</label>
-              <input id="pub-iv-title" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Interview title"></div>
-            <div><label class="text-xs text-slate-500">Consent</label>
-              <select id="pub-iv-consent" class="w-full rounded px-3 py-2 mt-1 text-sm">
-                <option value="public">Public</option><option value="anonymous">Anonymous</option><option value="private">Private</option>
-              </select></div>
+            <div><label class="text-xs text-slate-500">Title</label><input id="iv-title" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Interview title"></div>
+            <div><label class="text-xs text-slate-500">Consent</label><select id="iv-consent" class="w-full rounded px-3 py-2 mt-1 text-sm"><option value="public">Public</option><option value="anonymous">Anonymous</option><option value="private">Private</option></select></div>
           </div>
-          <div class="mt-3"><label class="text-xs text-slate-500">Notes</label>
-            <textarea id="pub-iv-notes" class="w-full rounded px-3 py-2 mt-1 text-sm h-20" placeholder="What was said, what was heard..."></textarea></div>
+          <div class="mt-3"><label class="text-xs text-slate-500">Notes</label><textarea id="iv-notes" class="w-full rounded px-3 py-2 mt-1 text-sm h-20" placeholder="Interview notes..."></textarea></div>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div class="glass rounded-xl p-6">
             <h3 class="font-semibold text-green-300 mb-4">🏁 Milestone</h3>
-            <div><label class="text-xs text-slate-500">Milestone</label>
-              <input id="pub-ms-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Onboarding complete"></div>
-            <div class="mt-2"><label class="text-xs text-slate-500">Status</label>
-              <select id="pub-ms-status" class="w-full rounded px-3 py-2 mt-1 text-sm">
-                <option value="pending">Pending</option><option value="in_progress">In Progress</option><option value="done">Done</option>
-              </select></div>
+            <div><label class="text-xs text-slate-500">Milestone</label><input id="ms-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="e.g. Onboarding complete"></div>
+            <div class="mt-2"><label class="text-xs text-slate-500">Status</label><select id="ms-status" class="w-full rounded px-3 py-2 mt-1 text-sm"><option value="pending">Pending</option><option value="in_progress">In Progress</option><option value="done">Done</option></select></div>
           </div>
-
           <div class="glass rounded-xl p-6">
             <h3 class="font-semibold text-green-300 mb-4">💰 Budget</h3>
             <div class="grid grid-cols-2 gap-2">
-              <div><label class="text-xs text-slate-500">Total ADA</label>
-                <input id="pub-bg-total" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="50000"></div>
-              <div><label class="text-xs text-slate-500">Earned ADA</label>
-                <input id="pub-bg-earned" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="12000"></div>
-              <div><label class="text-xs text-slate-500">Done</label>
-                <input id="pub-bg-done" type="number" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="8"></div>
-              <div><label class="text-xs text-slate-500">Target</label>
-                <input id="pub-bg-target" type="number" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="20"></div>
-              <div><label class="text-xs text-slate-500">Location</label>
-                <input id="pub-bg-loc" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Location"></div>
+              <div><label class="text-xs text-slate-500">Total ADA</label><input id="bg-total" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="50000"></div>
+              <div><label class="text-xs text-slate-500">Earned ADA</label><input id="bg-earned" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="12000"></div>
+              <div><label class="text-xs text-slate-500">Done</label><input id="bg-done" type="number" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="8"></div>
+              <div><label class="text-xs text-slate-500">Target</label><input id="bg-target" type="number" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="20"></div>
+              <div><label class="text-xs text-slate-500">Location</label><input id="bg-loc" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Location"></div>
             </div>
           </div>
         </div>
@@ -726,286 +469,258 @@ function renderPublish() {
           <div class="glass rounded-xl p-6">
             <h3 class="font-semibold text-green-300 mb-4">👥 Team Member</h3>
             <div class="grid grid-cols-2 gap-2">
-              <div><label class="text-xs text-slate-500">Name</label>
-                <input id="pub-lt-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Name"></div>
-              <div><label class="text-xs text-slate-500">DID</label>
-                <input id="pub-lt-did" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="did:cardano:..."></div>
-              <div><label class="text-xs text-slate-500">Wallet</label>
-                <input id="pub-lt-wallet" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="addr1..."></div>
-              <div><label class="text-xs text-slate-500">Region</label>
-                <input id="pub-lt-region" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Region"></div>
+              <div><label class="text-xs text-slate-500">Name</label><input id="lt-name" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Name"></div>
+              <div><label class="text-xs text-slate-500">DID</label><input id="lt-did" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="did:cardano:..."></div>
+              <div><label class="text-xs text-slate-500">Wallet</label><input id="lt-wallet" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="addr1..."></div>
+              <div><label class="text-xs text-slate-500">Region</label><input id="lt-region" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Region"></div>
             </div>
           </div>
-
           <div class="glass rounded-xl p-6">
             <h3 class="font-semibold text-green-300 mb-4">📖 Playbook Section</h3>
             <div class="grid grid-cols-2 gap-2">
-              <div><label class="text-xs text-slate-500">Section</label>
-                <input id="pub-pb-section" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Section"></div>
-              <div><label class="text-xs text-slate-500">Title</label>
-                <input id="pub-pb-title" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Title"></div>
-              <div><label class="text-xs text-slate-500">Region</label>
-                <input id="pub-pb-region" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Region"></div>
+              <div><label class="text-xs text-slate-500">Section</label><input id="pb-section" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Section"></div>
+              <div><label class="text-xs text-slate-500">Title</label><input id="pb-title" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Title"></div>
+              <div><label class="text-xs text-slate-500">Region</label><input id="pb-region" class="w-full rounded px-3 py-2 mt-1 text-sm" placeholder="Region"></div>
             </div>
-            <div class="mt-2"><label class="text-xs text-slate-500">Content</label>
-              <textarea id="pub-pb-content" class="w-full rounded px-3 py-2 mt-1 text-sm h-16" placeholder="Content..."></textarea></div>
+            <div class="mt-2"><label class="text-xs text-slate-500">Content</label><textarea id="pb-content" class="w-full rounded px-3 py-2 mt-1 text-sm h-16" placeholder="Content..."></textarea></div>
           </div>
         </div>
 
         <div class="glass rounded-xl p-6 mb-4">
           <h3 class="font-semibold text-green-300 mb-4">🎬 Video Evidence</h3>
-          <input id="pub-vid-file" type="file" accept="video/*" class="text-sm mb-2" />
-          <p class="text-xs text-slate-500">Optional — stored as a blob on your PDS.</p>
+          <input id="vid-file" type="file" accept="video/*" class="text-sm mb-2" />
+          <p class="text-xs text-slate-500">Raw bytes uploaded to PDS blob store. CID stored in a playbook section record.</p>
         </div>
 
-        <button id="pub-submit" onclick="publishAll()" class="w-full px-4 py-4 rounded bg-green-600 hover:bg-green-500 text-lg font-bold">${pubs.length > 0 ? 'Update & Commit →' : 'Commit & Publish →'}</button>
-
+        <button id="pub-submit" onclick="publishAll()" class="w-full px-4 py-4 rounded bg-green-600 hover:bg-green-500 text-lg font-bold">Publish →</button>
         <div class="flex gap-3 mt-4">
           <button onclick="document.querySelector('[data-step=\\'library\\']').click()" class="flex-1 px-4 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">View Library →</button>
         </div>
-      </div>
-    `;
-
-    // Pre-fill form with existing publication data (like editing a GitHub file)
-    if (existingPub) {
-      const set = (id, v) => { const el = document.getElementById(id); if (el && v) el.value = v; };
-      set('pub-project-name', existingPub.title);
-      set('pub-project-impact', existingPub.project?.impactArea);
-      set('pub-iv-title', existingPub.interview?.title);
-      set('pub-iv-consent', existingPub.interview?.consent);
-      set('pub-iv-notes', existingPub.interview?.notes);
-      set('pub-ms-name', existingPub.milestone?.milestone);
-      set('pub-ms-status', existingPub.milestone?.status);
-      set('pub-bg-total', existingPub.budget?.totalAda);
-      set('pub-bg-earned', existingPub.budget?.earnedAda);
-      set('pub-bg-done', existingPub.budget?.interviewsDone);
-      set('pub-bg-target', existingPub.budget?.interviewsTarget);
-      set('pub-bg-loc', existingPub.budget?.location);
-      set('pub-lt-name', existingPub.team?.teamName);
-      set('pub-lt-did', existingPub.team?.teamDid);
-      set('pub-lt-wallet', existingPub.team?.walletAddress);
-      set('pub-lt-region', existingPub.team?.region);
-      set('pub-pb-section', existingPub.playbook?.section);
-      set('pub-pb-title', existingPub.playbook?.title);
-      set('pub-pb-region', existingPub.playbook?.region);
-      set('pub-pb-content', existingPub.playbook?.content);
-    }
+      </div>`;
   });
 }
 
 async function publishAll() {
   const btn = document.getElementById('pub-submit');
   if (btn) { btn.disabled = true; btn.textContent = 'Publishing...'; }
+  const results = [];
 
   try {
-    // Gather all fields into one document
-    const doc = {
-      title: val('pub-project-name') || 'Untitled Publication',
-      createdAt: now(),
-      author: sessionDid,
-      hub: { name: val('pub-project-name') || 'Hub', did: sessionDid },
-      project: { name: val('pub-project-name') || '', impactArea: val('pub-project-impact') || '' },
-      interview: null,
-      milestone: null,
-      budget: null,
-      team: null,
-      playbook: null,
-      video: null,
-    };
-
-    if (val('pub-iv-title')) {
-      doc.interview = { title: val('pub-iv-title'), consent: val('pub-iv-consent'), notes: val('pub-iv-notes'), conductedAt: now() };
-    }
-    if (val('pub-ms-name')) {
-      doc.milestone = { milestone: val('pub-ms-name'), status: val('pub-ms-status'), completedAt: now() };
-    }
-    if (val('pub-bg-total') || val('pub-bg-earned')) {
-      doc.budget = { totalAda: val('pub-bg-total') || '0', earnedAda: val('pub-bg-earned') || '0', interviewsDone: parseInt(val('pub-bg-done')) || 0, interviewsTarget: parseInt(val('pub-bg-target')) || 0, location: val('pub-bg-loc') || '' };
-    }
-    if (val('pub-lt-name')) {
-      doc.team = { teamName: val('pub-lt-name'), teamDid: val('pub-lt-did'), walletAddress: val('pub-lt-wallet'), region: val('pub-lt-region') || '' };
-    }
-    if (val('pub-pb-title')) {
-      doc.playbook = { section: val('pub-pb-section') || '', title: val('pub-pb-title'), region: val('pub-pb-region') || '', content: val('pub-pb-content') || '' };
-    }
-
-    // Upload video first if present
-    const vidFile = document.getElementById('pub-vid-file');
+    // Upload video first (raw bytes via application/octet-stream)
+    const vidFile = document.getElementById('vid-file');
     if (vidFile && vidFile.files && vidFile.files[0]) {
       const file = vidFile.files[0];
-      if (file.size <= 50 * 1024 * 1024) {
+      if (file.size > 50 * 1024 * 1024) { toast('Video too large (max 50MB)', true); }
+      else {
         toast(`Uploading video (${Math.round(file.size / 1024 / 1024 * 10) / 10}MB)...`);
         try {
-          const resp = await fetch(`${pdsUrl}/xrpc/com.prisma.repo.uploadBlob?did=${encodeURIComponent(sessionDid)}`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/octet-stream',
-              'Authorization': 'Bearer ' + sessionToken
-            },
-            body: file
+          const arrayBuffer = await file.arrayBuffer();
+          const blobRes = await pdsUploadBlob(sessionDid, arrayBuffer);
+          console.log('Blob uploaded:', blobRes);
+          // Store video reference as a playbook section (indexer projects it)
+          await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+            collection: 'prisma.events.playbookSection', rkey: rkey(),
+            hubName: sessionDid, region: 'media', section: 'video',
+            title: file.name, content: 'Video CID: ' + blobRes.cid,
+            status: 'published', author: sessionDid, createdAt: now()
           });
-          const text = await resp.text();
-          console.log('Video upload response:', resp.status, text);
-          if (!resp.ok) throw new Error(`PDS ${resp.status}: ${text}`);
-          const blobRes = JSON.parse(text);
-          console.log('Blob CID:', blobRes.cid);
-          doc.video = { name: file.name, cid: blobRes.cid, size: file.size };
-        } catch (vidErr) {
-          console.error('Video upload error:', vidErr);
-          toast('Video upload failed: ' + vidErr.message, true);
-        }
-      } else { toast('Video too large (max 50MB), skipped', true); }
+          results.push('Video');
+        } catch (e) { console.error('Video upload error:', e); toast('Video upload failed: ' + e.message, true); }
+      }
     }
 
-    // Write/update ONE record containing the whole document.
-    // Like GitHub: first publish creates it (rkey="main"), subsequent
-    // publishes update the same record, creating new commits.
-    toast('Publishing your research document...');
-    const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-      collection: 'prisma.events.hubPublication', rkey: 'main',
-      ...doc
-    });
+    // Project (field names: name, impactArea, createdAt — camelCase!)
+    if (val('p-name')) {
+      toast('Writing project...');
+      await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+        collection: 'prisma.events.project', rkey: rkey(),
+        name: val('p-name'), impactArea: val('p-impact'), createdAt: now()
+      });
+      results.push('Project');
+    }
 
-    toast('Published! ' + short(r.cid));
-    if (btn) { btn.disabled = false; btn.textContent = 'Publish All Records →'; }
+    // Interview (field names: title, subject:{uri,cid}, consent, notes, createdAt)
+    if (val('iv-title')) {
+      toast('Writing interview...');
+      await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+        collection: 'prisma.events.interview', rkey: rkey(),
+        title: val('iv-title'), subject: { uri: '', cid: '' },
+        consent: val('iv-consent'), notes: val('iv-notes'), createdAt: now()
+      });
+      results.push('Interview');
+    }
+
+    // Milestone (field names: hubName, milestone, status, completedAt — camelCase!)
+    if (val('ms-name')) {
+      toast('Writing milestone...');
+      await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+        collection: 'prisma.events.milestoneProgress', rkey: rkey(),
+        hubName: val('p-name') || 'Hub', milestone: val('ms-name'),
+        status: val('ms-status'), completedAt: now()
+      });
+      results.push('Milestone');
+    }
+
+    // Budget (field names: hubName, location, totalAda, earnedAda, interviewsDone, interviewsTarget, playbookStatus)
+    if (val('bg-total') || val('bg-earned')) {
+      toast('Writing budget...');
+      await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+        collection: 'prisma.events.budgetAllocation', rkey: rkey(),
+        hubName: val('p-name') || 'Hub', location: val('bg-loc'),
+        totalAda: val('bg-total') || '0', earnedAda: val('bg-earned') || '0',
+        interviewsDone: parseInt(val('bg-done')) || 0, interviewsTarget: parseInt(val('bg-target')) || 0,
+        playbookStatus: 'draft'
+      });
+      results.push('Budget');
+    }
+
+    // Local team (field names: teamName, teamDid, walletAddress, hubName, region, interviewsDone, earnedAda)
+    if (val('lt-name')) {
+      toast('Writing team member...');
+      await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+        collection: 'prisma.events.localTeam', rkey: rkey(),
+        teamName: val('lt-name'), teamDid: val('lt-did'),
+        walletAddress: val('lt-wallet'), hubName: sessionDid,
+        region: val('lt-region'), interviewsDone: 0, earnedAda: '0'
+      });
+      results.push('Team');
+    }
+
+    // Playbook (field names: hubName, region, section, title, content, status, author, createdAt)
+    if (val('pb-title')) {
+      toast('Writing playbook section...');
+      await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+        collection: 'prisma.events.playbookSection', rkey: rkey(),
+        hubName: sessionDid, region: val('pb-region'), section: val('pb-section'),
+        title: val('pb-title'), content: val('pb-content'),
+        status: 'published', author: sessionDid, createdAt: now()
+      });
+      results.push('Playbook');
+    }
+
+    toast(`Published: ${results.join(', ')}`);
+    if (btn) { btn.disabled = false; btn.textContent = 'Publish →'; }
     setTimeout(() => { document.querySelector('[data-step="library"]').click(); }, 2000);
-  } catch (e) {
-    console.error('publishAll error:', e);
-    toast(e.message, true);
-    if (btn) { btn.disabled = false; btn.textContent = 'Publish All Records →'; }
-  }
+  } catch (e) { console.error('publishAll error:', e); toast(e.message, true); if (btn) { btn.disabled = false; btn.textContent = 'Publish →'; } }
 }
 
-// ─── Step 4: Library (read all hubs' publications) ────────────
+// ─── Step 4: Library ──────────────────────────────────────────
+// Reads from the AppView (pure JSON, already projected by the indexer)
 async function renderLibrary() {
   const c = document.getElementById('content');
-  c.innerHTML = '<div class="text-slate-500 text-sm">Loading the library...</div>';
+  c.innerHTML = '<div class="text-slate-500 text-sm">Loading library...</div>';
 
   try {
-    // Get all hubs from AppView
-    let hubs = [];
-    try { const hubsRes = await appviewGet('/api/research/hubs'); hubs = hubsRes.hubs || []; } catch {}
+    const [hubsRes, csRes, ecRes] = await Promise.all([
+      appviewGet('/api/research/hubs'),
+      appviewGet('/api/research/case-studies'),
+      appviewGet('/api/research/event-contract')
+    ]);
 
-    // Also try to get publications directly from the PDS (local + via known hubs)
-    // The AppView may not project hubPublication yet, so we read from the PDS directly.
-    let allPubs = [];
+    const hubs = hubsRes.hubs || [];
+    const caseStudies = csRes.case_studies || [];
+    const ec = ecRes;
+    const milestones = ec.milestones || [];
+    const budgets = ec.budgets || [];
+    const teams = ec.local_teams || [];
+    const playbook = ec.playbook_sections || [];
 
-    // Get publications from our own PDS
-    if (pdsUrl) {
-      try {
-        const resp = await fetch(`${pdsUrl}/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid || '')}&collection=prisma.events.hubPublication`);
-        if (resp.ok) {
-          const data = await resp.json();
-          for (const rec of (data.records || [])) {
-            if (rec.rkey !== 'main') continue;
-            try {
-              const bytes = new Uint8Array(rec.bytes || []);
-              const body = cbor.decode(bytes);
-              // If main is empty (all nulls), fall back to old record
-              const hasData = body && (body.title !== 'Untitled Publication' || body.interview || body.budget || body.team || body.playbook);
-              allPubs.push({ did: sessionDid, rkey: rec.rkey, cid: rec.cid, body });
-            } catch { allPubs.push({ did: sessionDid, rkey: rec.rkey, cid: rec.cid, body: { title: 'Unknown' } }); }
-          }
-        }
-      } catch {}
-    }
-
-    // Get case studies from AppView as fallback display
-    let caseStudies = [];
-    try { const csRes = await appviewGet('/api/research/case-studies'); caseStudies = csRes.case_studies || []; } catch {}
-
-    const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-
-    if (allPubs.length === 0 && hubs.length === 0 && caseStudies.length === 0) {
-      c.innerHTML = `<div class="max-w-2xl mx-auto fade-in">
-        <div class="glass rounded-xl p-8 text-center mb-6">
-          <h2 class="text-lg font-bold text-green-300 mb-2">The Library is empty</h2>
-          <p class="text-slate-400 text-sm mb-6">No hubs have published yet. ${sessionToken ? 'Publish your research to be the first.' : 'Register and publish to be the first.'}</p>
-          ${sessionToken
-            ? `<button onclick="document.querySelector('[data-step=\\'build\\']').click()" class="px-6 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Publish Research →</button>`
-            : `<button onclick="document.querySelector('[data-step=\\'register\\']').click()" class="px-6 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Register Your Hub →</button>`}
-        </div>
-      </div>`;
+    if (hubs.length === 0 && caseStudies.length === 0) {
+      c.innerHTML = `<div class="max-w-2xl mx-auto fade-in"><div class="glass rounded-xl p-8 text-center">
+        <h2 class="text-lg font-bold text-green-300 mb-2">The Library is empty</h2>
+        <p class="text-slate-400 text-sm mb-6">No hubs have published yet.</p>
+        ${sessionToken ? `<button onclick="document.querySelector('[data-step=\\'publish\\']').click()" class="px-6 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Publish Research →</button>`
+          : `<button onclick="document.querySelector('[data-step=\\'register\\']').click()" class="px-6 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Register Your Hub →</button>`}
+      </div></div>`;
       return;
     }
 
     let html = '<div class="max-w-5xl mx-auto fade-in">';
-    html += `<div class="text-center mb-6"><h2 class="text-xl font-bold text-green-300">The Research Library</h2><p class="text-slate-400 text-sm mt-1">${allPubs.length} publication${allPubs.length === 1 ? '' : 's'} · ${hubs.length} hub${hubs.length === 1 ? '' : 's'}</p></div>`;
+    html += `<div class="text-center mb-6"><h2 class="text-xl font-bold text-green-300">The Research Library</h2>`;
+    html += `<p class="text-slate-400 text-sm mt-1">${hubs.length} hub${hubs.length===1?'':'s'} · ${caseStudies.length} case stud${caseStudies.length===1?'y':'ies'} · ${milestones.length} milestones · ${playbook.length} playbook sections</p></div>`;
 
-    // Display each publication as a document
-    for (const pub of allPubs) {
-      const b = pub.body || {};
-      const sections = [];
-      if (b.project && b.project.name) sections.push({ icon: '📋', label: 'Project', text: `${b.project.name} — ${b.project.impactArea || 'impact area pending'}` });
-      if (b.interview) sections.push({ icon: '🎤', label: 'Interview', text: `${b.interview.title} (${b.interview.consent}) — ${b.interview.notes ? b.interview.notes.slice(0, 150) : 'no notes'}` });
-      if (b.milestone) sections.push({ icon: '🏁', label: 'Milestone', text: `${b.milestone.milestone} — ${b.milestone.status}` });
-      if (b.budget) sections.push({ icon: '💰', label: 'Budget', text: `Total: ${b.budget.totalAda} ADA · Earned: ${b.budget.earnedAda} ADA · ${b.budget.interviewsDone}/${b.budget.interviewsTarget} interviews` });
-      if (b.team) sections.push({ icon: '👥', label: 'Team', text: `${b.team.teamName} — ${b.team.region || '—'}` });
-      if (b.playbook) sections.push({ icon: '📖', label: 'Playbook', text: `${b.playbook.title} — ${b.playbook.section}` });
+    // Cross-hub progress
+    const totalDone = budgets.reduce((s, b) => s + b.interviews_done, 0);
+    const totalTarget = budgets.reduce((s, b) => s + b.interviews_target, 0);
+    const pct = totalTarget > 0 ? Math.round((totalDone / totalTarget) * 100) : 0;
+    html += `<div class="glass rounded-xl p-6 mb-6">
+      <h3 class="text-sm font-medium text-slate-300 mb-3">Cross-hub Progress</h3>
+      <div class="w-full bg-slate-800 rounded-full h-4 overflow-hidden mb-2"><div class="vitality-bar h-4 rounded-full" style="width: ${pct}%"></div></div>
+      <div class="text-right text-xs text-slate-500">${totalDone}/${totalTarget} interviews (${pct}%)</div>
+    </div>`;
 
-      const videoUrl = b.video && b.video.cid ? `${pdsUrl}/xrpc/com.prisma.sync.getBlob?did=${encodeURIComponent(pub.did)}&cid=${encodeURIComponent(b.video.cid)}` : null;
+    // Each hub as a gazette
+    for (const hub of hubs) {
+      const hProjs = caseStudies.filter(cs => cs.did === hub.did);
+      const hMs = milestones.filter(m => m.did === hub.did);
+      const hBg = budgets.filter(b => b.did === hub.did);
+      const hTeams = teams.filter(t => t.did === hub.did);
+      const hPb = playbook.filter(p => p.did === hub.did);
+      const hIvs = hProjs.flatMap(p => (p.interviews || []));
+      const total = hProjs.length + hMs.length + hBg.length + hTeams.length + hPb.length;
+      const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
       html += `<div class="glass rounded-xl p-6 mb-6" style="font-family: Georgia, serif;">
         <div style="border-top: 3px double #22c55e; border-bottom: 3px double #22c55e; padding: 1rem 0; text-align: center; margin-bottom: 1rem;">
-          <div style="font-size: 1.5rem; font-weight: 900; color: #bbf7d0;">${b.title || 'Untitled Publication'}</div>
-          <div style="font-size: 0.7rem; color: #64748b; letter-spacing: 0.15em; text-transform: uppercase; margin-top: 0.3rem;">${b.createdAt || today} · ${copyable(pub.did)}</div>
+          <div style="font-size: 1.5rem; font-weight: 900; color: #bbf7d0;">${hub.name}</div>
+          <div style="font-size: 0.7rem; color: #64748b; letter-spacing: 0.15em; text-transform: uppercase; margin-top: 0.3rem;">${hub.stakeholder_type} · ${today}</div>
+          <div style="font-size: 0.65rem; color: #475569; margin-top: 0.2rem;">${copyable(hub.did)}</div>
         </div>`;
 
-      if (sections.length === 0 && !videoUrl) {
-        html += `<p style="color: #64748b; font-size: 0.85rem; text-align: center;">Empty publication.</p>`;
+      if (total === 0 && hIvs.length === 0) {
+        html += `<p style="color: #64748b; font-size: 0.85rem; text-align: center;">No records published yet.</p>`;
       } else {
-        for (const s of sections) {
-          html += `<div style="margin-bottom: 0.75rem;">
-            <div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">${s.icon} ${s.label}</div>
-            <p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.2rem 0;">${s.text}</p>
-          </div>`;
-        }
-        if (videoUrl) {
-          html += `<div style="margin-bottom: 0.75rem;">
-            <div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">🎬 Video — ${b.video.name} (${Math.round(b.video.size / 1024 / 1024 * 10) / 10}MB)</div>
-            <video controls src="${videoUrl}" style="width: 100%; border-radius: 0.5rem; margin-top: 0.5rem;" onerror="this.outerHTML='<p style=\\'color:#ef4444;font-size:0.8rem;padding:0.5rem;\\'>Video not found on PDS (CID: ${b.video.cid})</p>'"></video>
-            <div style="font-size: 0.65rem; color: #475569; margin-top: 0.3rem;">Blob CID: ${copyable(b.video.cid)}</div>
-          </div>`;
-        }
+        if (hProjs.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Case Studies</div>`;
+          for (const p of hProjs) { html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${p.name}</strong> — ${p.impact_area || '—'}. ${copyable(p.cid)}</p>`; }
+          html += `</div>`; }
+        if (hIvs.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Interviews</div>`;
+          for (const iv of hIvs) { const cColor = iv.consent === 'public' ? '#22c55e' : iv.consent === 'anonymous' ? '#eab308' : '#ef4444';
+            html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${iv.title}</strong> <span style="color:${cColor}; font-size:0.7rem;">${iv.consent}</span>${iv.notes ? ' — ' + iv.notes.slice(0, 100) : ''}</p>`; }
+          html += `</div>`; }
+        if (hMs.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Milestones</div>`;
+          for (const m of hMs) { const done = m.status === 'done' || m.status === 'completed';
+            html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;">${done ? '■' : '□'} <strong>${m.milestone}</strong> — <em style="color:${done ? '#22c55e' : '#94a3b8'}">${m.status}</em></p>`; }
+          html += `</div>`; }
+        if (hBg.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Budget</div>`;
+          for (const b of hBg) { html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>Total:</strong> ${b.total_ada} ADA · <strong>Earned:</strong> ${b.earned_ada} ADA · ${b.interviews_done}/${b.interviews_target} interviews</p>`; }
+          html += `</div>`; }
+        if (hTeams.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Team</div>`;
+          for (const t of hTeams) { html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${t.team_name}</strong> — ${t.region || '—'}. ${copyable(t.team_did)}</p>`; }
+          html += `</div>`; }
+        // Video: fetch from PDS getBlob (raw bytes) via playbook sections with section=video
+        const vidSections = hPb.filter(p => p.section === 'video');
+        if (vidSections.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Video Evidence</div>`;
+          for (const v of vidSections) {
+            // Extract CID from content field: "Video CID: bafkrei..."
+            const cidMatch = (v.body?.content || v.content || '').match(/CID:\s*(bafkrei\w+)/);
+            if (cidMatch) {
+              const videoUrl = `${pdsUrl}/xrpc/com.prisma.sync.getBlob?did=${encodeURIComponent(hub.did)}&cid=${encodeURIComponent(cidMatch[1])}`;
+              html += `<div style="margin-top: 0.5rem;"><div style="font-size: 0.8rem; color: #94a3b8;">${v.title}</div><video controls src="${videoUrl}" style="width: 100%; border-radius: 0.5rem; margin-top: 0.3rem;" onerror="this.outerHTML='<p style=\\'color:#ef4444;font-size:0.8rem\\'>Video not available</p>'"></video></div>`;
+            }
+          }
+          html += `</div>`; }
+        if (hPb.filter(p => p.section !== 'video').length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Playbook</div>`;
+          for (const p of hPb.filter(p => p.section !== 'video')) { html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${p.title}</strong> — ${p.section}. <em style="color:#94a3b8">${p.status}</em></p>`; }
+          html += `</div>`; }
       }
 
-      html += `<div style="margin-top: 0.5rem;"><span style="font-size: 0.65rem; color: #475569;">CID: ${copyable(pub.cid)}</span></div>`;
-      html += `<div style="text-align: center; color: #22c55e; font-size: 0.8rem; letter-spacing: 0.5em; margin-top: 0.5rem;">■ ■ ■</div>`;
-      html += `</div>`;
+      html += `<div style="text-align: center; color: #22c55e; font-size: 0.8rem; letter-spacing: 0.5em;">■ ■ ■</div></div>`;
     }
 
-    // Fallback: show case studies from AppView if no publications
-    if (allPubs.length === 0 && caseStudies.length > 0) {
-      html += `<div class="text-center text-xs text-slate-600 mb-4">Showing legacy records (case studies from AppView)</div>`;
+    // Fallback: show case studies even without hub enrollment
+    if (hubs.length === 0 && caseStudies.length > 0) {
+      html += `<div class="text-center text-xs text-slate-600 mb-4">Records without hub enrollment</div>`;
       for (const cs of caseStudies) {
-        html += `<div class="glass rounded-xl p-5 mb-4" style="font-family: Georgia, serif;">
-          <div style="font-size: 1.2rem; font-weight: 700; color: #86efac;">${cs.name}</div>
-          <p style="font-size: 0.8rem; color: #94a3b8; margin: 0.3rem 0;">Impact: ${cs.impact_area || '—'} · ${copyable(cs.cid)}</p>
-        </div>`;
+        html += `<div class="glass rounded-xl p-5 mb-4" style="font-family: Georgia, serif;"><div style="font-size: 1.2rem; font-weight: 700; color: #86efac;">${cs.name}</div><p style="font-size: 0.8rem; color: #94a3b8; margin: 0.3rem 0;">${copyable(cs.did)} · ${copyable(cs.cid)}</p></div>`;
       }
     }
 
-    html += `<button onclick="renderLibrary()" class="w-full px-4 py-3 rounded bg-slate-700 hover:bg-slate-600 text-sm mt-4">Refresh Library</button>`;
-    html += `</div>`;
+    html += `<button onclick="renderLibrary()" class="w-full px-4 py-3 rounded bg-slate-700 hover:bg-slate-600 text-sm mt-4">Refresh Library</button></div>`;
     c.innerHTML = html;
-  } catch (err) {
-    c.innerHTML = errorBox(err);
-  }
+  } catch (err) { c.innerHTML = errorBox(err); }
 }
 
 // ─── Init ─────────────────────────────────────────────────────
-// Silent refresh: re-fetch data without re-rendering the whole page
-setInterval(async () => {
-  if (currentStep === 'library' && !document.hidden) {
-    try {
-      const c = document.getElementById('content');
-      const existing = c.innerHTML;
-      await renderLibrary();
-      // Only update if content actually changed
-      if (c.innerHTML === existing) c.innerHTML = existing;
-    } catch {}
-  }
-}, 30000);
 loadStep();
 </script>
 </body>
