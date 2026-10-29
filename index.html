@@ -711,85 +711,43 @@ function renderPublish() {
 async function publishAll() {
   const btn = document.getElementById('pub-submit');
   if (btn) { btn.disabled = true; btn.textContent = 'Publishing...'; }
-  const results = [];
-  const projectName = val('pub-project-name');
 
   try {
-    // 1. Project
-    if (projectName) {
-      toast('Writing project...');
-      const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-        collection: 'prisma.events.project', rkey: rkey(),
-        name: projectName, impactArea: val('pub-project-impact'), createdAt: now()
-      });
-      results.push('Project');
-    }
+    // Gather all fields into one document
+    const doc = {
+      title: val('pub-project-name') || 'Untitled Publication',
+      createdAt: now(),
+      author: sessionDid,
+      hub: { name: val('pub-project-name') || 'Hub', did: sessionDid },
+      project: { name: val('pub-project-name') || '', impactArea: val('pub-project-impact') || '' },
+      interview: null,
+      milestone: null,
+      budget: null,
+      team: null,
+      playbook: null,
+      video: null,
+    };
 
-    // 2. Interview
-    const ivTitle = val('pub-iv-title');
-    if (ivTitle) {
-      toast('Writing interview...');
-      const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-        collection: 'prisma.events.interview', rkey: rkey(), title: ivTitle,
-        subject: { uri: projectName ? sessionDid + '/' + rkey() : '', cid: '' },
-        consent: val('pub-iv-consent'), notes: val('pub-iv-notes'), createdAt: now()
-      });
-      results.push('Interview');
+    if (val('pub-iv-title')) {
+      doc.interview = { title: val('pub-iv-title'), consent: val('pub-iv-consent'), notes: val('pub-iv-notes'), conductedAt: now() };
     }
-
-    // 3. Milestone
-    const msName = val('pub-ms-name');
-    if (msName) {
-      toast('Writing milestone...');
-      const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-        collection: 'prisma.events.milestoneProgress', rkey: rkey(),
-        hubName: projectName || 'Hub', milestone: msName, status: val('pub-ms-status'), completedAt: now()
-      });
-      results.push('Milestone');
+    if (val('pub-ms-name')) {
+      doc.milestone = { milestone: val('pub-ms-name'), status: val('pub-ms-status'), completedAt: now() };
     }
-
-    // 4. Budget
     if (val('pub-bg-total') || val('pub-bg-earned')) {
-      toast('Writing budget...');
-      const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-        collection: 'prisma.events.budgetAllocation', rkey: rkey(),
-        hubName: projectName || 'Hub', location: val('pub-bg-loc'),
-        totalAda: val('pub-bg-total') || '0', earnedAda: val('pub-bg-earned') || '0',
-        interviewsDone: parseInt(val('pub-bg-done')) || 0, interviewsTarget: parseInt(val('pub-bg-target')) || 0,
-        playbookStatus: 'draft'
-      });
-      results.push('Budget');
+      doc.budget = { totalAda: val('pub-bg-total') || '0', earnedAda: val('pub-bg-earned') || '0', interviewsDone: parseInt(val('pub-bg-done')) || 0, interviewsTarget: parseInt(val('pub-bg-target')) || 0, location: val('pub-bg-loc') || '' };
     }
-
-    // 5. Local team
     if (val('pub-lt-name')) {
-      toast('Writing team member...');
-      const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-        collection: 'prisma.events.localTeam', rkey: rkey(),
-        teamName: val('pub-lt-name'), teamDid: val('pub-lt-did'),
-        walletAddress: val('pub-lt-wallet'), hubName: sessionDid,
-        region: val('pub-lt-region'), interviewsDone: 0, earnedAda: '0'
-      });
-      results.push('Team member');
+      doc.team = { teamName: val('pub-lt-name'), teamDid: val('pub-lt-did'), walletAddress: val('pub-lt-wallet'), region: val('pub-lt-region') || '' };
     }
-
-    // 6. Playbook
     if (val('pub-pb-title')) {
-      toast('Writing playbook section...');
-      const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-        collection: 'prisma.events.playbookSection', rkey: rkey(),
-        hubName: projectName || 'Hub', region: val('pub-pb-region'),
-        section: val('pub-pb-section'), title: val('pub-pb-title'),
-        content: val('pub-pb-content'), status: 'published', author: 'self', createdAt: now()
-      });
-      results.push('Playbook');
+      doc.playbook = { section: val('pub-pb-section') || '', title: val('pub-pb-title'), region: val('pub-pb-region') || '', content: val('pub-pb-content') || '' };
     }
 
-    // 7. Video
+    // Upload video first if present
     const vidFile = document.getElementById('pub-vid-file');
     if (vidFile && vidFile.files && vidFile.files[0]) {
       const file = vidFile.files[0];
-      console.log('Video upload:', file.name, file.size, 'bytes,', file.type);
       if (file.size <= 50 * 1024 * 1024) {
         toast(`Uploading video (${Math.round(file.size / 1024 / 1024 * 10) / 10}MB)...`);
         const bytes = new Uint8Array(await file.arrayBuffer());
@@ -800,16 +758,9 @@ async function publishAll() {
             method: 'POST', headers, body: bytes
           });
           const text = await resp.text();
-          console.log('Video upload response:', resp.status, text);
-          if (!resp.ok) throw new Error(`PDS ${resp.status}: ${text}`);
+          if (!resp.ok) throw new Error(text);
           const blobRes = JSON.parse(text);
-          await pdsPost('/xrpc/com.prisma.repo.createRecord', {
-            collection: 'prisma.events.playbookSection', rkey: rkey(),
-            hubName: projectName || 'Hub', region: 'media', section: 'video',
-            title: file.name, content: 'Video blob CID: ' + blobRes.cid,
-            status: 'published', author: 'self', createdAt: now()
-          });
-          results.push('Video');
+          doc.video = { name: file.name, cid: blobRes.cid, size: file.size };
         } catch (vidErr) {
           console.error('Video upload error:', vidErr);
           toast('Video upload failed: ' + vidErr.message, true);
@@ -817,7 +768,14 @@ async function publishAll() {
       } else { toast('Video too large (max 50MB), skipped', true); }
     }
 
-    toast(`Published ${results.length} record${results.length === 1 ? '' : 's'}: ${results.join(', ')}`);
+    // Write ONE record containing the whole document
+    toast('Publishing your research document...');
+    const r = await pdsPost('/xrpc/com.prisma.repo.createRecord', {
+      collection: 'prisma.events.hubPublication', rkey: rkey(),
+      ...doc
+    });
+
+    toast('Published! ' + short(r.cid));
     if (btn) { btn.disabled = false; btn.textContent = 'Publish All Records →'; }
     setTimeout(() => { document.querySelector('[data-step="library"]').click(); }, 2000);
   } catch (e) {
@@ -827,27 +785,47 @@ async function publishAll() {
   }
 }
 
-// ─── Step 4: Library (read all hubs' gazettes) ────────────────
+// ─── Step 4: Library (read all hubs' publications) ────────────
 async function renderLibrary() {
   const c = document.getElementById('content');
   c.innerHTML = '<div class="text-slate-500 text-sm">Loading the library...</div>';
 
   try {
-    const [hubsRes, csRes, ecRes] = await Promise.all([
-      appviewGet('/api/research/hubs'),
-      appviewGet('/api/research/case-studies'),
-      appviewGet('/api/research/event-contract')
-    ]);
+    // Get all hubs from AppView
+    let hubs = [];
+    try { const hubsRes = await appviewGet('/api/research/hubs'); hubs = hubsRes.hubs || []; } catch {}
 
-    const hubs = hubsRes.hubs || [];
-    const caseStudies = csRes.case_studies || [];
-    const ec = ecRes;
-    const milestones = ec.milestones || [];
-    const budgets = ec.budgets || [];
-    const teams = ec.local_teams || [];
-    const playbook = ec.playbook_sections || [];
+    // Also try to get publications directly from the PDS (local + via known hubs)
+    // The AppView may not project hubPublication yet, so we read from the PDS directly.
+    let allPubs = [];
 
-    if (hubs.length === 0) {
+    // Get publications from our own PDS
+    if (pdsUrl) {
+      try {
+        const resp = await fetch(`${pdsUrl}/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid || '')}&collection=prisma.events.hubPublication`);
+        if (resp.ok) {
+          const data = await resp.json();
+          for (const rec of (data.records || [])) {
+            try {
+              // Decode CBOR bytes to JSON
+              const bytes = new Uint8Array(rec.bytes || []);
+              const decoder = new TextDecoder();
+              const text = decoder.decode(bytes);
+              try { const body = JSON.parse(text); allPubs.push({ did: sessionDid, rkey: rec.rkey, cid: rec.cid, body }); }
+              catch { allPubs.push({ did: sessionDid, rkey: rec.rkey, cid: rec.cid, body: { title: 'Unknown', raw: text } }); }
+            } catch {}
+          }
+        }
+      } catch {}
+    }
+
+    // Get case studies from AppView as fallback display
+    let caseStudies = [];
+    try { const csRes = await appviewGet('/api/research/case-studies'); caseStudies = csRes.case_studies || []; } catch {}
+
+    const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
+    if (allPubs.length === 0 && hubs.length === 0 && caseStudies.length === 0) {
       c.innerHTML = `<div class="max-w-2xl mx-auto fade-in">
         <div class="glass rounded-xl p-8 text-center mb-6">
           <h2 class="text-lg font-bold text-green-300 mb-2">The Library is empty</h2>
@@ -860,101 +838,55 @@ async function renderLibrary() {
       return;
     }
 
-    // Group records by hub
     let html = '<div class="max-w-5xl mx-auto fade-in">';
-    html += `<div class="text-center mb-6"><h2 class="text-xl font-bold text-green-300">The Research Library</h2><p class="text-slate-400 text-sm mt-1">${hubs.length} hub${hubs.length === 1 ? '' : 's'} · ${caseStudies.length} case stud${caseStudies.length === 1 ? 'y' : 'ies'} · ${milestones.length} milestones · ${playbook.length} playbook sections</p></div>`;
+    html += `<div class="text-center mb-6"><h2 class="text-xl font-bold text-green-300">The Research Library</h2><p class="text-slate-400 text-sm mt-1">${allPubs.length} publication${allPubs.length === 1 ? '' : 's'} · ${hubs.length} hub${hubs.length === 1 ? '' : 's'}</p></div>`;
 
-    // Vitality overview across all hubs
-    const totalDone = budgets.reduce((s, b) => s + b.interviews_done, 0);
-    const totalTarget = budgets.reduce((s, b) => s + b.interviews_target, 0);
-    const pct = totalTarget > 0 ? Math.round((totalDone / totalTarget) * 100) : 0;
-
-    html += `<div class="glass rounded-xl p-6 mb-6">
-      <h3 class="text-sm font-medium text-slate-300 mb-3">Cross-hub Progress</h3>
-      <div class="w-full bg-slate-800 rounded-full h-4 overflow-hidden mb-2">
-        <div class="vitality-bar h-4 rounded-full" style="width: ${pct}%"></div>
-      </div>
-      <div class="text-right text-xs text-slate-500">${totalDone}/${totalTarget} interviews across all hubs (${pct}%)</div>
-    </div>`;
-
-    // Each hub as a gazette
-    for (const hub of hubs) {
-      const hubProjects = caseStudies.filter(cs => cs.did === hub.did);
-      const hubMs = milestones.filter(m => m.did === hub.did);
-      const hubBg = budgets.filter(b => b.did === hub.did);
-      const hubTeams = teams.filter(t => t.did === hub.did);
-      const hubPb = playbook.filter(p => p.did === hub.did);
-      const hubInterviews = hubProjects.flatMap(p => (p.interviews || []));
-      const recordCount = hubProjects.length + hubMs.length + hubBg.length + hubTeams.length + hubPb.length;
-
-      const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    // Display each publication as a document
+    for (const pub of allPubs) {
+      const b = pub.body || {};
+      const sections = [];
+      if (b.project && b.project.name) sections.push({ icon: '📋', label: 'Project', text: `${b.project.name} — ${b.project.impactArea || 'impact area pending'}` });
+      if (b.interview) sections.push({ icon: '🎤', label: 'Interview', text: `${b.interview.title} (${b.interview.consent}) — ${b.interview.notes ? b.interview.notes.slice(0, 150) : 'no notes'}` });
+      if (b.milestone) sections.push({ icon: '🏁', label: 'Milestone', text: `${b.milestone.milestone} — ${b.milestone.status}` });
+      if (b.budget) sections.push({ icon: '💰', label: 'Budget', text: `Total: ${b.budget.totalAda} ADA · Earned: ${b.budget.earnedAda} ADA · ${b.budget.interviewsDone}/${b.budget.interviewsTarget} interviews` });
+      if (b.team) sections.push({ icon: '👥', label: 'Team', text: `${b.team.teamName} — ${b.team.region || '—'}` });
+      if (b.playbook) sections.push({ icon: '📖', label: 'Playbook', text: `${b.playbook.title} — ${b.playbook.section}` });
+      if (b.video) sections.push({ icon: '🎬', label: 'Video', text: `${b.video.name} (${Math.round(b.video.size / 1024 / 1024 * 10) / 10}MB)` });
 
       html += `<div class="glass rounded-xl p-6 mb-6" style="font-family: Georgia, serif;">
         <div style="border-top: 3px double #22c55e; border-bottom: 3px double #22c55e; padding: 1rem 0; text-align: center; margin-bottom: 1rem;">
-          <div style="font-size: 1.5rem; font-weight: 900; color: #bbf7d0; letter-spacing: 0.05em;">${hub.name}</div>
-          <div style="font-size: 0.7rem; color: #64748b; letter-spacing: 0.15em; text-transform: uppercase; margin-top: 0.3rem;">${hub.stakeholder_type} · ${today}</div>
-          <div style="font-size: 0.65rem; color: #475569; margin-top: 0.2rem;">${copyable(hub.did)}</div>
+          <div style="font-size: 1.5rem; font-weight: 900; color: #bbf7d0;">${b.title || 'Untitled Publication'}</div>
+          <div style="font-size: 0.7rem; color: #64748b; letter-spacing: 0.15em; text-transform: uppercase; margin-top: 0.3rem;">${b.createdAt || today} · ${copyable(pub.did)}</div>
         </div>`;
 
-      if (recordCount === 0) {
-        html += `<p style="color: #64748b; font-size: 0.85rem; text-align: center;">No records published yet.</p>`;
+      if (sections.length === 0) {
+        html += `<p style="color: #64748b; font-size: 0.85rem; text-align: center;">Empty publication.</p>`;
       } else {
-        if (hubProjects.length > 0) {
-          html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Case Studies</div>`;
-          for (const p of hubProjects) {
-            html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${p.name}</strong> — ${p.impact_area || '—'}. ${copyable(p.cid)}</p>`;
-          }
-          html += `</div>`;
-        }
-
-        if (hubInterviews.length > 0) {
-          html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Interviews</div>`;
-          for (const iv of hubInterviews) {
-            const cColor = iv.consent === 'public' ? '#22c55e' : iv.consent === 'anonymous' ? '#eab308' : '#ef4444';
-            html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${iv.title}</strong> <span style="color:${cColor}; font-size:0.7rem;">${iv.consent}</span>${iv.notes ? ' — ' + iv.notes.slice(0, 100) : ''}</p>`;
-          }
-          html += `</div>`;
-        }
-
-        if (hubMs.length > 0) {
-          html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Milestones</div>`;
-          for (const m of hubMs) {
-            const done = m.status === 'done' || m.status === 'completed';
-            html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;">${done ? '■' : '□'} <strong>${m.milestone}</strong> — <em style="color:${done ? '#22c55e' : '#94a3b8'}">${m.status}</em></p>`;
-          }
-          html += `</div>`;
-        }
-
-        if (hubBg.length > 0) {
-          html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Budget</div>`;
-          for (const b of hubBg) {
-            html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>Total:</strong> ${b.total_ada} ADA · <strong>Earned:</strong> ${b.earned_ada} ADA · ${b.interviews_done}/${b.interviews_target} interviews</p>`;
-          }
-          html += `</div>`;
-        }
-
-        if (hubTeams.length > 0) {
-          html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Team</div>`;
-          for (const t of hubTeams) {
-            html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${t.team_name}</strong> — ${t.region || '—'}. ${copyable(t.team_did)}</p>`;
-          }
-          html += `</div>`;
-        }
-
-        if (hubPb.length > 0) {
-          html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Playbook</div>`;
-          for (const p of hubPb) {
-            html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${p.title}</strong> — ${p.section}. <em style="color:#94a3b8">${p.status}</em></p>`;
-          }
-          html += `</div>`;
+        for (const s of sections) {
+          html += `<div style="margin-bottom: 0.75rem;">
+            <div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">${s.icon} ${s.label}</div>
+            <p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.2rem 0;">${s.text}</p>
+          </div>`;
         }
       }
 
-      html += `<div style="text-align: center; color: #22c55e; font-size: 0.8rem; letter-spacing: 0.5em;">■ ■ ■</div>`;
+      html += `<div style="margin-top: 0.5rem;"><span style="font-size: 0.65rem; color: #475569;">CID: ${copyable(pub.cid)}</span></div>`;
+      html += `<div style="text-align: center; color: #22c55e; font-size: 0.8rem; letter-spacing: 0.5em; margin-top: 0.5rem;">■ ■ ■</div>`;
       html += `</div>`;
     }
 
-    html += `<button onclick="renderLibrary()" class="w-full px-4 py-3 rounded bg-slate-700 hover:bg-slate-600 text-sm">Refresh Library</button>`;
+    // Fallback: show case studies from AppView if no publications
+    if (allPubs.length === 0 && caseStudies.length > 0) {
+      html += `<div class="text-center text-xs text-slate-600 mb-4">Showing legacy records (case studies from AppView)</div>`;
+      for (const cs of caseStudies) {
+        html += `<div class="glass rounded-xl p-5 mb-4" style="font-family: Georgia, serif;">
+          <div style="font-size: 1.2rem; font-weight: 700; color: #86efac;">${cs.name}</div>
+          <p style="font-size: 0.8rem; color: #94a3b8; margin: 0.3rem 0;">Impact: ${cs.impact_area || '—'} · ${copyable(cs.cid)}</p>
+        </div>`;
+      }
+    }
+
+    html += `<button onclick="renderLibrary()" class="w-full px-4 py-3 rounded bg-slate-700 hover:bg-slate-600 text-sm mt-4">Refresh Library</button>`;
     html += `</div>`;
     c.innerHTML = html;
   } catch (err) {
