@@ -904,7 +904,8 @@ async function renderLibrary() {
       if (b.budget) sections.push({ icon: '💰', label: 'Budget', text: `Total: ${b.budget.totalAda} ADA · Earned: ${b.budget.earnedAda} ADA · ${b.budget.interviewsDone}/${b.budget.interviewsTarget} interviews` });
       if (b.team) sections.push({ icon: '👥', label: 'Team', text: `${b.team.teamName} — ${b.team.region || '—'}` });
       if (b.playbook) sections.push({ icon: '📖', label: 'Playbook', text: `${b.playbook.title} — ${b.playbook.section}` });
-      if (b.video) sections.push({ icon: '🎬', label: 'Video', text: `${b.video.name} (${Math.round(b.video.size / 1024 / 1024 * 10) / 10}MB)` });
+
+      const videoUrl = b.video && b.video.cid ? `${pdsUrl}/xrpc/com.prisma.sync.getBlob?did=${encodeURIComponent(pub.did)}&cid=${encodeURIComponent(b.video.cid)}` : null;
 
       html += `<div class="glass rounded-xl p-6 mb-6" style="font-family: Georgia, serif;">
         <div style="border-top: 3px double #22c55e; border-bottom: 3px double #22c55e; padding: 1rem 0; text-align: center; margin-bottom: 1rem;">
@@ -912,13 +913,19 @@ async function renderLibrary() {
           <div style="font-size: 0.7rem; color: #64748b; letter-spacing: 0.15em; text-transform: uppercase; margin-top: 0.3rem;">${b.createdAt || today} · ${copyable(pub.did)}</div>
         </div>`;
 
-      if (sections.length === 0) {
+      if (sections.length === 0 && !videoUrl) {
         html += `<p style="color: #64748b; font-size: 0.85rem; text-align: center;">Empty publication.</p>`;
       } else {
         for (const s of sections) {
           html += `<div style="margin-bottom: 0.75rem;">
             <div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">${s.icon} ${s.label}</div>
             <p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.2rem 0;">${s.text}</p>
+          </div>`;
+        }
+        if (videoUrl) {
+          html += `<div style="margin-bottom: 0.75rem;">
+            <div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">🎬 Video — ${b.video.name} (${Math.round(b.video.size / 1024 / 1024 * 10) / 10}MB)</div>
+            <video controls src="${videoUrl}" style="width: 100%; border-radius: 0.5rem; margin-top: 0.5rem;"></video>
           </div>`;
         }
       }
@@ -948,7 +955,6 @@ async function renderLibrary() {
 }
 
 // ─── Init ─────────────────────────────────────────────────────
-setInterval(() => { if (currentStep === 'library') loadStep(); }, 30000);
 loadStep();
 </script>
 </body>
