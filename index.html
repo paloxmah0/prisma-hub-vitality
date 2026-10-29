@@ -279,7 +279,7 @@ function renderRegister() {
 async function checkHubExists() {
   if (!sessionDid) return false;
   try {
-    const r = await pdsGet(`/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(libraryDid)}`);
+    const r = await pdsGet(`/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(sessionDid)}`);
     return r.rev > 0;
   } catch { return false; }
 }
@@ -385,14 +385,14 @@ function renderPublish() {
 
   // Get commit history from PDS
   Promise.all([
-    pdsGet(`/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(libraryDid)}`).catch(() => null),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(libraryDid)}&collection=prisma.events.enrollment`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(libraryDid)}&collection=prisma.events.project`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(libraryDid)}&collection=prisma.events.interview`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(libraryDid)}&collection=prisma.events.milestoneProgress`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(libraryDid)}&collection=prisma.events.budgetAllocation`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(libraryDid)}&collection=prisma.events.localTeam`).catch(() => ({ records: [] })),
-    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(libraryDid)}&collection=prisma.events.playbookSection`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(sessionDid)}`).catch(() => null),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.enrollment`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.project`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.interview`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.milestoneProgress`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.budgetAllocation`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.localTeam`).catch(() => ({ records: [] })),
+    pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(sessionDid)}&collection=prisma.events.playbookSection`).catch(() => ({ records: [] })),
   ]).then(([latestCommit, enroll, proj, iv, ms, bg, lt, pb]) => {
     const totalRev = latestCommit ? latestCommit.rev : 0;
     const counts = {
@@ -786,7 +786,7 @@ async function renderLibrary() {
         for (const v of vidSections) {
           const cidMatch = (v.body.content || '').match(/CID:\s*(bafkrei\w+)/);
           if (cidMatch) {
-            const videoUrl = `${pdsUrl}/xrpc/com.prisma.sync.getBlob?did=${encodeURIComponent(libraryDid)}&cid=${encodeURIComponent(cidMatch[1])}`;
+            const videoUrl = `${pdsUrl}/xrpc/com.prisma.sync.getBlob?did=${encodeURIComponent(sessionDid)}&cid=${encodeURIComponent(cidMatch[1])}`;
             html += `<div style="margin-top: 0.5rem;"><div style="font-size: 0.8rem; color: #94a3b8;">${v.body.title || 'Video'}</div><video controls src="${videoUrl}" style="width: 100%; border-radius: 0.5rem; margin-top: 0.3rem;" onerror="this.outerHTML='<p style=\\'color:#ef4444;font-size:0.8rem\\'>Video not available on PDS</p>'"></video></div>`;
           }
         }
