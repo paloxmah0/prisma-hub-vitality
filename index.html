@@ -606,26 +606,80 @@ async function publishAll() {
 
 // ─── Step 4: Library ──────────────────────────────────────────
 // Reads from the AppView (pure JSON, already projected by the indexer)
+// ─── Step 4: Library ──────────────────────────────────────────
+// Reads directly from the PDS (always up-to-date) AND the AppView (cross-hub).
+// The PDS is the source of truth — the relay/indexer/AppView are derived.
+// Like Bluesky: writes go to PDS, reads can come from PDS or AppView.
+
+// Decode a PDS listRecords response — bytes are CBOR (DAG-CBOR)
+async function pdsListRecords(did, collection) {
+  try {
+    const data = await pdsGet(`/xrpc/com.prisma.repo.listRecords?did=${encodeURIComponent(did)}&collection=${collection}`);
+    return (data.records || []).map(rec => {
+      let body = {};
+      try { body = cbor.decode(new Uint8Array(rec.bytes || [])); } catch { try { body = JSON.parse(new TextDecoder().decode(new Uint8Array(rec.bytes || []))); } catch {} }
+      return { rkey: rec.rkey, cid: rec.cid, body };
+    });
+  } catch { return []; }
+}
+
 async function renderLibrary() {
   const c = document.getElementById('content');
-  c.innerHTML = '<div class="text-slate-500 text-sm">Loading library...</div>';
+  c.innerHTML = '<div class="text-slate-500 text-sm">Loading library from PDS...</div>';
 
   try {
-    const [hubsRes, csRes, ecRes] = await Promise.all([
-      appviewGet('/api/research/hubs'),
-      appviewGet('/api/research/case-studies'),
-      appviewGet('/api/research/event-contract')
-    ]);
+    // First try AppView (cross-hub, but may be empty if relay is broken)
+    let appviewHubs = [], appviewCs = [], appviewEc = null;
+    try {
+      const [hubsRes, csRes, ecRes] = await Promise.all([
+        appviewGet('/api/research/hubs'),
+        appviewGet('/api/research/case-studies'),
+        appviewGet('/api/research/event-contract')
+      ]);
+      appviewHubs = hubsRes.hubs || [];
+      appviewCs = csRes.case_studies || [];
+      appviewEc = ecRes;
+    } catch {}
 
-    const hubs = hubsRes.hubs || [];
-    const caseStudies = csRes.case_studies || [];
-    const ec = ecRes;
-    const milestones = ec.milestones || [];
-    const budgets = ec.budgets || [];
-    const teams = ec.local_teams || [];
-    const playbook = ec.playbook_sections || [];
+    // Then read directly from PDS (our own records — always current)
+    let myRecords = {};
+    if (sessionDid && pdsUrl) {
+      const collections = [
+        'prisma.events.enrollment', 'prisma.events.project', 'prisma.events.interview',
+        'prisma.events.milestoneProgress', 'prisma.events.budgetAllocation',
+        'prisma.events.localTeam', 'prisma.events.playbookSection'
+      ];
+      const results = await Promise.all(collections.map(col => pdsListRecords(sessionDid, col)));
+      collections.forEach((col, i) => { myRecords[col] = results[i]; });
+    }
 
-    if (hubs.length === 0 && caseStudies.length === 0) {
+    // Build a unified hub list: AppView hubs + our own PDS enrollment
+    let allHubs = [...appviewHubs];
+    if (myRecords['prisma.events.enrollment'] && myRecords['prisma.events.enrollment'].length > 0) {
+      const enroll = myRecords['prisma.events.enrollment'][0].body;
+      if (!allHubs.find(h => h.did === sessionDid)) {
+        allHubs.push({
+          did: sessionDid, name: enroll.name || 'My Hub',
+          stakeholder_type: enroll.stakeholder_type || '—',
+          wallet_address: enroll.wallet_address || '—',
+          enrolled_at: enroll.enrolled_at || '—',
+          cid: myRecords['prisma.events.enrollment'][0].cid
+        });
+      }
+    }
+
+    // Count my PDS records
+    const myCounts = {
+      project: (myRecords['prisma.events.project'] || []).length,
+      interview: (myRecords['prisma.events.interview'] || []).length,
+      milestone: (myRecords['prisma.events.milestoneProgress'] || []).length,
+      budget: (myRecords['prisma.events.budgetAllocation'] || []).length,
+      team: (myRecords['prisma.events.localTeam'] || []).length,
+      playbook: (myRecords['prisma.events.playbookSection'] || []).length,
+    };
+    const myTotal = Object.values(myCounts).reduce((a, b) => a + b, 0);
+
+    if (allHubs.length === 0 && appviewCs.length === 0 && myTotal === 0) {
       c.innerHTML = `<div class="max-w-2xl mx-auto fade-in"><div class="glass rounded-xl p-8 text-center">
         <h2 class="text-lg font-bold text-green-300 mb-2">The Library is empty</h2>
         <p class="text-slate-400 text-sm mb-6">No hubs have published yet.</p>
@@ -637,82 +691,123 @@ async function renderLibrary() {
 
     let html = '<div class="max-w-5xl mx-auto fade-in">';
     html += `<div class="text-center mb-6"><h2 class="text-xl font-bold text-green-300">The Research Library</h2>`;
-    html += `<p class="text-slate-400 text-sm mt-1">${hubs.length} hub${hubs.length===1?'':'s'} · ${caseStudies.length} case stud${caseStudies.length===1?'y':'ies'} · ${milestones.length} milestones · ${playbook.length} playbook sections</p></div>`;
+    html += `<p class="text-slate-400 text-sm mt-1">${allHubs.length} hub${allHubs.length===1?'':'s'} · ${myTotal} records on your PDS · ${appviewCs.length} on AppView</p></div>`;
 
-    // Cross-hub progress
-    const totalDone = budgets.reduce((s, b) => s + b.interviews_done, 0);
-    const totalTarget = budgets.reduce((s, b) => s + b.interviews_target, 0);
-    const pct = totalTarget > 0 ? Math.round((totalDone / totalTarget) * 100) : 0;
-    html += `<div class="glass rounded-xl p-6 mb-6">
-      <h3 class="text-sm font-medium text-slate-300 mb-3">Cross-hub Progress</h3>
-      <div class="w-full bg-slate-800 rounded-full h-4 overflow-hidden mb-2"><div class="vitality-bar h-4 rounded-full" style="width: ${pct}%"></div></div>
-      <div class="text-right text-xs text-slate-500">${totalDone}/${totalTarget} interviews (${pct}%)</div>
-    </div>`;
+    // AppView cross-hub data (if available)
+    if (appviewEc) {
+      const budgets = appviewEc.budgets || [];
+      const totalDone = budgets.reduce((s, b) => s + b.interviews_done, 0);
+      const totalTarget = budgets.reduce((s, b) => s + b.interviews_target, 0);
+      const pct = totalTarget > 0 ? Math.round((totalDone / totalTarget) * 100) : 0;
+      if (budgets.length > 0) {
+        html += `<div class="glass rounded-xl p-6 mb-6">
+          <h3 class="text-sm font-medium text-slate-300 mb-3">Cross-hub Progress (AppView)</h3>
+          <div class="w-full bg-slate-800 rounded-full h-4 overflow-hidden mb-2"><div class="vitality-bar h-4 rounded-full" style="width: ${pct}%"></div></div>
+          <div class="text-right text-xs text-slate-500">${totalDone}/${totalTarget} interviews (${pct}%)</div>
+        </div>`;
+      }
+    }
 
-    // Each hub as a gazette
-    for (const hub of hubs) {
-      const hProjs = caseStudies.filter(cs => cs.did === hub.did);
-      const hMs = milestones.filter(m => m.did === hub.did);
-      const hBg = budgets.filter(b => b.did === hub.did);
-      const hTeams = teams.filter(t => t.did === hub.did);
-      const hPb = playbook.filter(p => p.did === hub.did);
-      const hIvs = hProjs.flatMap(p => (p.interviews || []));
-      const total = hProjs.length + hMs.length + hBg.length + hTeams.length + hPb.length;
+    // Show our own hub's records from the PDS (always current, no relay needed)
+    if (myTotal > 0 && sessionDid) {
       const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-
+      const enroll = (myRecords['prisma.events.enrollment'] || [{}])[0].body || {};
       html += `<div class="glass rounded-xl p-6 mb-6" style="font-family: Georgia, serif;">
         <div style="border-top: 3px double #22c55e; border-bottom: 3px double #22c55e; padding: 1rem 0; text-align: center; margin-bottom: 1rem;">
-          <div style="font-size: 1.5rem; font-weight: 900; color: #bbf7d0;">${hub.name}</div>
-          <div style="font-size: 0.7rem; color: #64748b; letter-spacing: 0.15em; text-transform: uppercase; margin-top: 0.3rem;">${hub.stakeholder_type} · ${today}</div>
-          <div style="font-size: 0.65rem; color: #475569; margin-top: 0.2rem;">${copyable(hub.did)}</div>
+          <div style="font-size: 1.5rem; font-weight: 900; color: #bbf7d0;">${enroll.name || 'My Hub'}</div>
+          <div style="font-size: 0.7rem; color: #64748b; letter-spacing: 0.15em; text-transform: uppercase; margin-top: 0.3rem;">${enroll.stakeholder_type || '—'} · ${today}</div>
+          <div style="font-size: 0.65rem; color: #475569; margin-top: 0.2rem;">${copyable(sessionDid)}</div>
         </div>`;
 
-      if (total === 0 && hIvs.length === 0) {
-        html += `<p style="color: #64748b; font-size: 0.85rem; text-align: center;">No records published yet.</p>`;
-      } else {
-        if (hProjs.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Case Studies</div>`;
-          for (const p of hProjs) { html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${p.name}</strong> — ${p.impact_area || '—'}. ${copyable(p.cid)}</p>`; }
-          html += `</div>`; }
-        if (hIvs.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Interviews</div>`;
-          for (const iv of hIvs) { const cColor = iv.consent === 'public' ? '#22c55e' : iv.consent === 'anonymous' ? '#eab308' : '#ef4444';
-            html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${iv.title}</strong> <span style="color:${cColor}; font-size:0.7rem;">${iv.consent}</span>${iv.notes ? ' — ' + iv.notes.slice(0, 100) : ''}</p>`; }
-          html += `</div>`; }
-        if (hMs.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Milestones</div>`;
-          for (const m of hMs) { const done = m.status === 'done' || m.status === 'completed';
-            html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;">${done ? '■' : '□'} <strong>${m.milestone}</strong> — <em style="color:${done ? '#22c55e' : '#94a3b8'}">${m.status}</em></p>`; }
-          html += `</div>`; }
-        if (hBg.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Budget</div>`;
-          for (const b of hBg) { html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>Total:</strong> ${b.total_ada} ADA · <strong>Earned:</strong> ${b.earned_ada} ADA · ${b.interviews_done}/${b.interviews_target} interviews</p>`; }
-          html += `</div>`; }
-        if (hTeams.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Team</div>`;
-          for (const t of hTeams) { html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${t.team_name}</strong> — ${t.region || '—'}. ${copyable(t.team_did)}</p>`; }
-          html += `</div>`; }
-        // Video: fetch from PDS getBlob (raw bytes) via playbook sections with section=video
-        const vidSections = hPb.filter(p => p.section === 'video');
-        if (vidSections.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Video Evidence</div>`;
-          for (const v of vidSections) {
-            // Extract CID from content field: "Video CID: bafkrei..."
-            const cidMatch = (v.body?.content || v.content || '').match(/CID:\s*(bafkrei\w+)/);
-            if (cidMatch) {
-              const videoUrl = `${pdsUrl}/xrpc/com.prisma.sync.getBlob?did=${encodeURIComponent(hub.did)}&cid=${encodeURIComponent(cidMatch[1])}`;
-              html += `<div style="margin-top: 0.5rem;"><div style="font-size: 0.8rem; color: #94a3b8;">${v.title}</div><video controls src="${videoUrl}" style="width: 100%; border-radius: 0.5rem; margin-top: 0.3rem;" onerror="this.outerHTML='<p style=\\'color:#ef4444;font-size:0.8rem\\'>Video not available</p>'"></video></div>`;
-            }
+      // Projects
+      const projects = myRecords['prisma.events.project'] || [];
+      if (projects.length > 0) {
+        html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Case Studies (${projects.length})</div>`;
+        for (const p of projects) { html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${p.body.name || 'Untitled'}</strong> — ${p.body.impactArea || '—'}. ${copyable(p.cid)}</p>`; }
+        html += `</div>`;
+      }
+
+      // Interviews
+      const interviews = myRecords['prisma.events.interview'] || [];
+      if (interviews.length > 0) {
+        html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Interviews (${interviews.length})</div>`;
+        for (const iv of interviews) { const cColor = iv.body.consent === 'public' ? '#22c55e' : iv.body.consent === 'anonymous' ? '#eab308' : '#ef4444';
+          html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${iv.body.title || 'Untitled'}</strong> <span style="color:${cColor}; font-size:0.7rem;">${iv.body.consent || 'private'}</span>${iv.body.notes ? ' — ' + iv.body.notes.slice(0, 120) : ''}</p>`; }
+        html += `</div>`;
+      }
+
+      // Milestones
+      const milestones = myRecords['prisma.events.milestoneProgress'] || [];
+      if (milestones.length > 0) {
+        html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Milestones (${milestones.length})</div>`;
+        for (const m of milestones) { const done = m.body.status === 'done' || m.body.status === 'completed';
+          html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;">${done ? '■' : '□'} <strong>${m.body.milestone || '—'}</strong> — <em style="color:${done ? '#22c55e' : '#94a3b8'}">${m.body.status || '—'}</em></p>`; }
+        html += `</div>`;
+      }
+
+      // Budgets
+      const budgets = myRecords['prisma.events.budgetAllocation'] || [];
+      if (budgets.length > 0) {
+        html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Budget (${budgets.length})</div>`;
+        for (const b of budgets) {
+          html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>Total:</strong> ${b.body.totalAda || '0'} ADA · <strong>Earned:</strong> ${b.body.earnedAda || '0'} ADA · ${b.body.interviewsDone || 0}/${b.body.interviewsTarget || 0} interviews</p>`; }
+        html += `</div>`;
+      }
+
+      // Team
+      const teams = myRecords['prisma.events.localTeam'] || [];
+      if (teams.length > 0) {
+        html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Team (${teams.length})</div>`;
+        for (const t of teams) { html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${t.body.teamName || '—'}</strong> — ${t.body.region || '—'}. ${copyable(t.body.teamDid)}</p>`; }
+        html += `</div>`;
+      }
+
+      // Video + Playbook
+      const playbook = myRecords['prisma.events.playbookSection'] || [];
+      const vidSections = playbook.filter(p => p.body.section === 'video');
+      if (vidSections.length > 0) {
+        html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Video Evidence (${vidSections.length})</div>`;
+        for (const v of vidSections) {
+          const cidMatch = (v.body.content || '').match(/CID:\s*(bafkrei\w+)/);
+          if (cidMatch) {
+            const videoUrl = `${pdsUrl}/xrpc/com.prisma.sync.getBlob?did=${encodeURIComponent(sessionDid)}&cid=${encodeURIComponent(cidMatch[1])}`;
+            html += `<div style="margin-top: 0.5rem;"><div style="font-size: 0.8rem; color: #94a3b8;">${v.body.title || 'Video'}</div><video controls src="${videoUrl}" style="width: 100%; border-radius: 0.5rem; margin-top: 0.3rem;" onerror="this.outerHTML='<p style=\\'color:#ef4444;font-size:0.8rem\\'>Video not available on PDS</p>'"></video></div>`;
           }
-          html += `</div>`; }
-        if (hPb.filter(p => p.section !== 'video').length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Playbook</div>`;
-          for (const p of hPb.filter(p => p.section !== 'video')) { html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${p.title}</strong> — ${p.section}. <em style="color:#94a3b8">${p.status}</em></p>`; }
-          html += `</div>`; }
+        }
+        html += `</div>`;
+      }
+      const pbSections = playbook.filter(p => p.body.section !== 'video');
+      if (pbSections.length > 0) {
+        html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #22c55e;">Playbook (${pbSections.length})</div>`;
+        for (const p of pbSections) { html += `<p style="font-size: 0.85rem; color: #cbd5e1; margin: 0.3rem 0;"><strong>${p.body.title || '—'}</strong> — ${p.body.section || '—'}. <em style="color:#94a3b8">${p.body.status || '—'}</em></p>`; }
+        html += `</div>`;
       }
 
       html += `<div style="text-align: center; color: #22c55e; font-size: 0.8rem; letter-spacing: 0.5em;">■ ■ ■</div></div>`;
     }
 
-    // Fallback: show case studies even without hub enrollment
-    if (hubs.length === 0 && caseStudies.length > 0) {
-      html += `<div class="text-center text-xs text-slate-600 mb-4">Records without hub enrollment</div>`;
-      for (const cs of caseStudies) {
-        html += `<div class="glass rounded-xl p-5 mb-4" style="font-family: Georgia, serif;"><div style="font-size: 1.2rem; font-weight: 700; color: #86efac;">${cs.name}</div><p style="font-size: 0.8rem; color: #94a3b8; margin: 0.3rem 0;">${copyable(cs.did)} · ${copyable(cs.cid)}</p></div>`;
-      }
+    // Show other hubs from AppView (if relay is working)
+    for (const hub of appviewHubs) {
+      if (hub.did === sessionDid) continue; // already shown above
+      const hProjs = appviewCs.filter(cs => cs.did === hub.did);
+      const hMs = (appviewEc?.milestones || []).filter(m => m.did === hub.did);
+      const hBg = (appviewEc?.budgets || []).filter(b => b.did === hub.did);
+      const hTeams = (appviewEc?.local_teams || []).filter(t => t.did === hub.did);
+      const hPb = (appviewEc?.playbook_sections || []).filter(p => p.did === hub.did);
+      const total = hProjs.length + hMs.length + hBg.length + hTeams.length + hPb.length;
+      if (total === 0) continue;
+
+      const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+      html += `<div class="glass rounded-xl p-6 mb-6" style="font-family: Georgia, serif;">
+        <div style="border-top: 3px double #22c55e; border-bottom: 3px double #22c55e; padding: 1rem 0; text-align: center; margin-bottom: 1rem;">
+          <div style="font-size: 1.5rem; font-weight: 900; color: #bbf7d0;">${hub.name}</div>
+          <div style="font-size: 0.7rem; color: #64748b; letter-spacing: 0.15em; text-transform: uppercase; margin-top: 0.3rem;">${hub.stakeholder_type} · ${today}</div>
+        </div>`;
+      if (hProjs.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; color: #22c55e; text-transform: uppercase;">Case Studies</div>`;
+        for (const p of hProjs) { html += `<p style="font-size: 0.85rem; color: #cbd5e1;"><strong>${p.name}</strong> — ${p.impact_area || '—'}</p>`; } html += `</div>`; }
+      if (hMs.length > 0) { html += `<div style="margin-bottom: 1rem;"><div style="font-size: 0.65rem; color: #22c55e; text-transform: uppercase;">Milestones</div>`;
+        for (const m of hMs) { html += `<p style="font-size: 0.85rem; color: #cbd5e1;">■ <strong>${m.milestone}</strong> — ${m.status}</p>`; } html += `</div>`; }
+      html += `<div style="text-align: center; color: #22c55e; font-size: 0.8rem; letter-spacing: 0.5em;">■ ■ ■</div></div>`;
     }
 
     html += `<button onclick="renderLibrary()" class="w-full px-4 py-3 rounded bg-slate-700 hover:bg-slate-600 text-sm mt-4">Refresh Library</button></div>`;
