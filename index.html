@@ -209,18 +209,37 @@ async function walletSignIn() {
     const rewardAddresses = await walletApi.getRewardAddresses();
     if (!rewardAddresses || rewardAddresses.length === 0) { toast('No reward address', true); return; }
     rewardAddress = rewardAddresses[0];
+    console.log('rewardAddress raw:', rewardAddress, 'type:', typeof rewardAddress);
+    
+    // getRewardAddresses returns hex-encoded bytes (e.g. "e045694e...")
+    // The DID uses the bech32 stake address, but signData wants the hex address
     const stakeAddress = typeof rewardAddress === 'string' && rewardAddress.startsWith('stake')
       ? rewardAddress
       : hexToStakeAddress(rewardAddress);
     const did = `did:cardano:${stakeAddress}`;
+    console.log('DID:', did);
 
     toast('Requesting challenge...');
     const challenge = await pdsPost('/xrpc/com.prisma.auth.getChallenge', { did });
+    console.log('Challenge:', challenge);
+    
+    // CIP-30 signData takes (address, hexPayload)
+    // address = the hex-encoded address bytes (what getRewardAddresses returned)
+    // hexPayload = hex-encoded bytes of the challenge message
     const challengeBytes = new TextEncoder().encode(challenge.challenge);
     const hexPayload = Array.from(challengeBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    console.log('hexPayload:', hexPayload);
+    
     toast('Waiting for wallet signature...');
-    const sigResult = await walletApi.signData(rewardAddress, hexPayload);
-    if (!sigResult || !sigResult.signature || !sigResult.key) { throw new Error('Wallet did not return a signature'); }
+    let sigResult;
+    try {
+      sigResult = await walletApi.signData(rewardAddress, hexPayload);
+      console.log('signData result:', sigResult);
+    } catch (signErr) {
+      console.error('signData error:', signErr);
+      throw new Error('Wallet rejected the signature request: ' + signErr.message);
+    }
+    if (!sigResult || !sigResult.signature || !sigResult.key) { throw new Error('Wallet did not return a valid signature'); }
     const { signature, key } = sigResult;
     toast('Signing in...');
     const session = await pdsPost('/xrpc/com.prisma.auth.login', { nonce: challenge.nonce, signature, key });
