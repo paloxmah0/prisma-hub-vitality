@@ -50,8 +50,8 @@
 <nav id="stepper" class="px-6 pt-4 flex gap-6 text-sm font-medium">
   <button class="step step-active pb-2" data-step="connect">1. Connect</button>
   <button class="step pb-2" data-step="register">2. Register</button>
-  <button class="step pb-2" data-step="build">3. Publish</button>
-  <button class="step pb-2" data-step="library">4. Library</button>
+  <button class="step pb-2" data-step="build">Publish</button>
+  <button class="step pb-2" data-step="library">Library</button>
 </nav>
 
 <!-- Content -->
@@ -798,7 +798,16 @@ async function renderLibrary() {
     const playbook = ec.playbook_sections || [];
 
     if (hubs.length === 0) {
-      c.innerHTML = emptyState('No hubs yet', 'No one has registered. Be the first!');
+      c.innerHTML = `<div class="max-w-2xl mx-auto fade-in">
+        <div class="glass rounded-xl p-8 text-center mb-6">
+          <h2 class="text-lg font-bold text-green-300 mb-2">The Library is empty</h2>
+          <p class="text-slate-400 text-sm mb-6">No hubs have registered yet. Be the first to publish research.</p>
+          <button onclick="document.querySelector('[data-step=\\'register\\']').click()" class="px-6 py-3 rounded bg-green-600 hover:bg-green-500 text-sm font-medium">Register Your Hub →</button>
+        </div>
+        <div class="text-center text-xs text-slate-600">
+          Already registered? <button class="text-green-400 hover:underline" onclick="document.querySelector('[data-step=\\'build\\']').click()">Publish research →</button>
+        </div>
+      </div>`;
       return;
     }
 
