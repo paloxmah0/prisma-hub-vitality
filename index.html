@@ -182,7 +182,12 @@ async function pdsPost(path, body) {
   if (!pdsUrl) throw new Error('Set the PDS URL first');
   const headers = { 'Content-Type': 'application/json' };
   if (sessionToken) headers['Authorization'] = 'Bearer ' + sessionToken;
-  const resp = await fetch(`${pdsUrl}${path}`, { method: 'POST', headers, body: JSON.stringify(body) });
+  let resp;
+  try {
+    resp = await fetch(`${pdsUrl}${path}`, { method: 'POST', headers, body: JSON.stringify(body) });
+  } catch (e) {
+    throw new Error(`Cannot reach PDS at ${pdsUrl} — is it running? (${e.message})`);
+  }
   const text = await resp.text();
   if (!resp.ok) throw new Error(`PDS ${resp.status}: ${text}`);
   return text ? JSON.parse(text) : {};
