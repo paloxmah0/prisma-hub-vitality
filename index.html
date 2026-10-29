@@ -612,10 +612,11 @@ function renderPublish() {
     }
 
     // Publication — single record that gets updated (rkey="main")
+    let existingPub = null;
     if (pubs.length > 0) {
       const pub = pubs[0];
-      let pubBody = {};
-      try { pubBody = cbor.decode(new Uint8Array(pub.bytes || [])); } catch { pubBody = {}; }
+      try { existingPub = cbor.decode(new Uint8Array(pub.bytes || [])); } catch { existingPub = null; }
+      const pubBody = existingPub || {};
       const rev = totalRev || pubs.length + 1;
       const sections = [];
       if (pubBody.project && pubBody.project.name) sections.push('project');
@@ -764,6 +765,31 @@ function renderPublish() {
         </div>
       </div>
     `;
+
+    // Pre-fill form with existing publication data (like editing a GitHub file)
+    if (existingPub) {
+      const set = (id, v) => { const el = document.getElementById(id); if (el && v) el.value = v; };
+      set('pub-project-name', existingPub.title);
+      set('pub-project-impact', existingPub.project?.impactArea);
+      set('pub-iv-title', existingPub.interview?.title);
+      set('pub-iv-consent', existingPub.interview?.consent);
+      set('pub-iv-notes', existingPub.interview?.notes);
+      set('pub-ms-name', existingPub.milestone?.milestone);
+      set('pub-ms-status', existingPub.milestone?.status);
+      set('pub-bg-total', existingPub.budget?.totalAda);
+      set('pub-bg-earned', existingPub.budget?.earnedAda);
+      set('pub-bg-done', existingPub.budget?.interviewsDone);
+      set('pub-bg-target', existingPub.budget?.interviewsTarget);
+      set('pub-bg-loc', existingPub.budget?.location);
+      set('pub-lt-name', existingPub.team?.teamName);
+      set('pub-lt-did', existingPub.team?.teamDid);
+      set('pub-lt-wallet', existingPub.team?.walletAddress);
+      set('pub-lt-region', existingPub.team?.region);
+      set('pub-pb-section', existingPub.playbook?.section);
+      set('pub-pb-title', existingPub.playbook?.title);
+      set('pub-pb-region', existingPub.playbook?.region);
+      set('pub-pb-content', existingPub.playbook?.content);
+    }
   });
 }
 
@@ -871,10 +897,12 @@ async function renderLibrary() {
         if (resp.ok) {
           const data = await resp.json();
           for (const rec of (data.records || [])) {
-            if (rec.rkey !== 'main') continue; // only show the main publication, one per hub
+            if (rec.rkey !== 'main') continue;
             try {
               const bytes = new Uint8Array(rec.bytes || []);
               const body = cbor.decode(bytes);
+              // If main is empty (all nulls), fall back to old record
+              const hasData = body && (body.title !== 'Untitled Publication' || body.interview || body.budget || body.team || body.playbook);
               allPubs.push({ did: sessionDid, rkey: rec.rkey, cid: rec.cid, body });
             } catch { allPubs.push({ did: sessionDid, rkey: rec.rkey, cid: rec.cid, body: { title: 'Unknown' } }); }
           }
