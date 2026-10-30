@@ -70,6 +70,7 @@ let appviewUrl = localStorage.getItem('appview-url') || '';
 let pdsUrl = localStorage.getItem('pds-url') || '';
 let sessionToken = null;
 let sessionDid = null;
+let pdsDid = null;  // did:web:<hostname> — the PDS repo DID (for Tap)
 let walletApi = null;
 let rewardAddress = null;
 let currentStep = 'connect';
@@ -78,6 +79,7 @@ let hubCreated = false;
 
 document.getElementById('appview-url').value = appviewUrl;
 document.getElementById('pds-url').value = pdsUrl;
+if (pdsUrl) { try { const h = new URL(pdsUrl).hostname; pdsDid = 'did:web:' + h; } catch {} }
 
 // ─── Helpers ──────────────────────────────────────────────────
 function val(id) { return document.getElementById(id)?.value?.trim() || ''; }
@@ -194,7 +196,10 @@ document.getElementById('save-config').addEventListener('click', () => {
   pdsUrl = document.getElementById('pds-url').value.replace(/\/$/, '');
   localStorage.setItem('appview-url', appviewUrl);
   localStorage.setItem('pds-url', pdsUrl);
-  toast('Config saved'); loadStep();
+  // Derive did:web from PDS hostname
+  try { const h = new URL(pdsUrl).hostname; pdsDid = 'did:web:' + h; } catch {}
+  toast('Config saved');
+  loadStep();
 });
 
 document.querySelectorAll('.step').forEach(btn => {
@@ -257,7 +262,7 @@ function renderRegister() {
     hubCreated = exists;
     if (exists) {
       // Check what role they registered as
-      pdsListRecords(sessionDid, 'prisma.events.enrollment').then(records => {
+      pdsListRecords(pdsDid, 'prisma.events.enrollment').then(records => {
         if (records.length > 0) {
           const enroll = records[0].body;
           userRole = (enroll.stakeholder_type === '5BkzBo' || enroll.stakeholder_type === '5BkzBo2') ? 'hub' : 'member';
@@ -273,14 +278,14 @@ function renderRegister() {
 async function checkHubExists() {
   if (!sessionDid) return false;
   try {
-    const r = await pdsGet(`/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(sessionDid)}`);
+    const r = await pdsGet(`/xrpc/com.prisma.sync.getLatestCommit?did=${encodeURIComponent(pdsDid)}`);
     return r.rev && r.rev !== '' && r.rev !== 0;
   } catch { return false; }
 }
 
 function renderHubOverview() {
   const c = document.getElementById('content');
-  pdsListRecords(sessionDid, 'prisma.events.enrollment').then(records => {
+  pdsListRecords(pdsDid, 'prisma.events.enrollment').then(records => {
     const enroll = (records[0] || {}).body || {};
     c.innerHTML = `
       <div class="max-w-2xl mx-auto fade-in">
@@ -353,14 +358,14 @@ async function submitRegistration(stakeholderType) {
     const walletAddress = val('reg-wallet') || 'unknown';
 
     toast('Creating repo...');
-    try { await pdsPost('/xrpc/com.prisma.repo.initiateRepo', { did: sessionDid, stakeholder_type: stakeholderType, name, wallet_address: walletAddress }); }
+    try { await pdsPost('/xrpc/com.prisma.repo.initiateRepo', { did: pdsDid, stakeholder_type: stakeholderType, name, wallet_address: walletAddress }); }
     catch (e) { if (e.message.includes('409')) toast('Already exists, continuing...'); else throw e; }
 
     toast('Recording enrollment...');
     await pdsPost('/xrpc/com.prisma.repo.createRecord', {
       collection: 'prisma.events.enrollment', rkey: 'self',
       stakeholder_type: stakeholderType, name, wallet_address: walletAddress,
-      did: sessionDid, enrolled_at: now()
+      did: pdsDid, enrolled_at: now()
     });
 
     hubCreated = true;
@@ -390,10 +395,10 @@ async function renderMemberWork() {
 
   // Load existing records from PDS
   const [interviews, questionnaires, evidence, playbook] = await Promise.all([
-    pdsListRecords(sessionDid, 'prisma.events.interview'),
-    pdsListRecords(sessionDid, 'prisma.events.playbookSection').then(r => r.filter(x => x.body.section === 'questionnaire')),
-    pdsListRecords(sessionDid, 'prisma.events.playbookSection').then(r => r.filter(x => x.body.section === 'evidence' || x.body.section === 'video')),
-    pdsListRecords(sessionDid, 'prisma.events.enrollment'),
+    pdsListRecords(pdsDid, 'prisma.events.interview'),
+    pdsListRecords(pdsDid, 'prisma.events.playbookSection').then(r => r.filter(x => x.body.section === 'questionnaire')),
+    pdsListRecords(pdsDid, 'prisma.events.playbookSection').then(r => r.filter(x => x.body.section === 'evidence' || x.body.section === 'video')),
+    pdsListRecords(pdsDid, 'prisma.events.enrollment'),
   ]);
 
   const enroll = (playbook[0] || {}).body || {};
@@ -470,7 +475,7 @@ async function createQuestionnaire() {
     const questions = val('q-questions').split('\n').filter(q => q.trim());
     await pdsPost('/xrpc/com.prisma.repo.createRecord', {
       collection: 'prisma.events.playbookSection', rkey: rkey(),
-      hubName: sessionDid, region: val('q-region'), section: 'questionnaire',
+      hubName: pdsDid, region: val('q-region'), section: 'questionnaire',
       title, content: JSON.stringify(questions), status: 'draft', author: sessionDid, createdAt: now()
     });
     toast('Questionnaire created!');
@@ -492,7 +497,7 @@ async function uploadEvidence() {
 
     await pdsPost('/xrpc/com.prisma.repo.createRecord', {
       collection: 'prisma.events.playbookSection', rkey: rkey(),
-      hubName: sessionDid, region: 'evidence', section: file.type.startsWith('video/') ? 'video' : 'evidence',
+      hubName: pdsDid, region: 'evidence', section: file.type.startsWith('video/') ? 'video' : 'evidence',
       title, content: `Evidence: ${val('ev-desc') || ''} | CID: ${blobRes.cid}`,
       status: 'published', author: sessionDid, createdAt: now()
     });
@@ -508,11 +513,11 @@ async function renderHubWork() {
 
   // Load hub's own records
   const [enrollments, projects, milestones, budgets, playbook] = await Promise.all([
-    pdsListRecords(sessionDid, 'prisma.events.enrollment'),
-    pdsListRecords(sessionDid, 'prisma.events.project'),
-    pdsListRecords(sessionDid, 'prisma.events.milestoneProgress'),
-    pdsListRecords(sessionDid, 'prisma.events.budgetAllocation'),
-    pdsListRecords(sessionDid, 'prisma.events.playbookSection'),
+    pdsListRecords(pdsDid, 'prisma.events.enrollment'),
+    pdsListRecords(pdsDid, 'prisma.events.project'),
+    pdsListRecords(pdsDid, 'prisma.events.milestoneProgress'),
+    pdsListRecords(pdsDid, 'prisma.events.budgetAllocation'),
+    pdsListRecords(pdsDid, 'prisma.events.playbookSection'),
   ]);
 
   const enroll = (enrollments[0] || {}).body || {};
@@ -634,7 +639,7 @@ async function createPlaybook() {
     const title = val('pb-title'); if (!title) return toast('Title required', true);
     await pdsPost('/xrpc/com.prisma.repo.createRecord', {
       collection: 'prisma.events.playbookSection', rkey: rkey(),
-      hubName: sessionDid, section: val('pb-section'), title,
+      hubName: pdsDid, section: val('pb-section'), title,
       content: val('pb-content'), status: 'published', author: sessionDid, createdAt: now()
     });
     toast('Playbook section written!');
@@ -646,7 +651,7 @@ async function createBudget() {
   try {
     await pdsPost('/xrpc/com.prisma.repo.createRecord', {
       collection: 'prisma.events.budgetAllocation', rkey: rkey(),
-      hubName: sessionDid, totalAda: val('bg-total') || '0', earnedAda: val('bg-earned') || '0',
+      hubName: pdsDid, totalAda: val('bg-total') || '0', earnedAda: val('bg-earned') || '0',
       interviewsDone: parseInt(val('bg-done')) || 0, interviewsTarget: parseInt(val('bg-target')) || 0,
       playbookStatus: 'draft'
     });
@@ -660,7 +665,7 @@ async function createMilestone() {
     const m = val('ms-name'); if (!m) return toast('Milestone required', true);
     await pdsPost('/xrpc/com.prisma.repo.createRecord', {
       collection: 'prisma.events.milestoneProgress', rkey: rkey(),
-      hubName: sessionDid, milestone: m, status: val('ms-status'), completedAt: now()
+      hubName: pdsDid, milestone: m, status: val('ms-status'), completedAt: now()
     });
     toast('Milestone recorded!');
     setTimeout(() => renderWork(), 1500);
